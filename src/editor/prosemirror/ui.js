@@ -31,6 +31,7 @@ import {
   pageSettingsForm,
   textFontFamilySelect,
   textFontSizeSelect,
+  textListTypeSelect,
   textLineSpacingSelect,
   textParagraphSpacingSelect,
   zoomInButton,
@@ -105,6 +106,11 @@ export function renderToolbarState(uiState) {
     textFontSizeSelect,
     textState.fontSize,
     DEFAULT_TEXT_TOOLBAR_STATE.fontSize
+  );
+  setSelectValue(
+    textListTypeSelect,
+    textState.listType,
+    DEFAULT_TEXT_TOOLBAR_STATE.listType
   );
   setSelectValue(
     textLineSpacingSelect,
@@ -257,6 +263,10 @@ export function bindEditorUi({
   });
   textFontSizeSelect.addEventListener("change", () => {
     controller.setTextFontSize(textFontSizeSelect.value);
+    focusControllerSoon(controller);
+  });
+  textListTypeSelect.addEventListener("change", () => {
+    controller.setTextListType(textListTypeSelect.value);
     focusControllerSoon(controller);
   });
   textLineSpacingSelect.addEventListener("change", () => {

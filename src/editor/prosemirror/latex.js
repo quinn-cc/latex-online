@@ -10,14 +10,17 @@ import {
   normalizeLineSpacing,
   normalizeMathFontFamily,
   normalizeMathFontSize,
+  normalizeOrderedListStyle,
   normalizeParagraphSpacing,
   normalizeTextAlignment,
   normalizeTextFontFamily,
   normalizeTextFontSize,
 } from "./options.js";
 import { editorSchema } from "./schema.js";
+import { normalizeTableStyle } from "./table-styles.js";
 
 const LATEX_FORMAT_VERSION = 1;
+let parsedMathIdCounter = 0;
 
 const DOCUMENT_HEADER = String.raw`% Latex Online format ${LATEX_FORMAT_VERSION}
 \documentclass[11pt]{article}
@@ -29,7 +32,19 @@ const DOCUMENT_HEADER = String.raw`% Latex Online format ${LATEX_FORMAT_VERSION}
 \newcommand{\LOpageSettings}[9]{}
 \newcommand{\LOsegment}[6]{#6}
 \newcommand{\LOinlineMath}[4]{$#1$}
+\newcommand{\LOdisplayMath}[4]{\[#1\]}
 \newcommand{\LOparagraph}[4]{#4\par\vspace{#3em}}
+\newcommand{\LOlist}[2]{#2}
+\newcommand{\LOitem}[1]{#1}
+\newcommand{\LOalign}[2]{\begin{align*}#2\end{align*}}
+\newcommand{\LOalignRow}[1]{#1 \\}
+\newcommand{\LOalignCell}[4]{#1}
+\newcommand{\LOgather}[2]{\begin{gather*}#2\end{gather*}}
+\newcommand{\LOgatherRow}[1]{#1 \\}
+\newcommand{\LOgatherCell}[4]{#1}
+\newcommand{\LOtable}[2]{#2}
+\newcommand{\LOtableRow}[1]{#1}
+\newcommand{\LOtableCell}[1]{#1}
 
 \begin{document}
 `;
@@ -96,6 +111,11 @@ function decodeMathArg(value) {
     .replace(/\\%/g, "%")
     .replace(/\\#/g, "#")
     .replace(/\\&/g, "&");
+}
+
+function createParsedMathId(prefix = "math") {
+  parsedMathIdCounter += 1;
+  return `${prefix}-${Date.now().toString(36)}-${parsedMathIdCounter.toString(36)}`;
 }
 
 function getTextStyleFromMarks(marks) {
@@ -193,6 +213,206 @@ function serializeParagraph(node) {
     "}";
 }
 
+function serializeListItem(node) {
+  const blocks = [];
+
+  node.forEach((child) => {
+    const serialized = serializeBlockNode(child);
+
+    if (serialized) {
+      blocks.push(serialized);
+    }
+  });
+
+  return String.raw`\LOitem{` +
+    (blocks.length > 0 ? `\n${blocks.join("\n\n")}\n` : `\n${serializeParagraph(editorSchema.nodes.paragraph.createAndFill())}\n`) +
+    "}";
+}
+
+function serializeList(node) {
+  const listType = node.type === editorSchema.nodes.bullet_list
+    ? "bullet"
+    : normalizeOrderedListStyle(node.attrs.listStyle);
+  const items = [];
+
+  node.forEach((child) => {
+    if (child.type === editorSchema.nodes.list_item) {
+      items.push(serializeListItem(child));
+    }
+  });
+
+  return String.raw`\LOlist{${listType}}{` +
+    (items.length > 0 ? `\n${items.join("\n")}\n` : "\n") +
+    "}";
+}
+
+function serializeDisplayMath(node) {
+  return String.raw`\LOdisplayMath{${escapeMathArg(node.attrs.latex)}}{${normalizeMathFontFamily(node.attrs.fontFamily)}}{${normalizeMathFontSize(node.attrs.fontSize)}}{${normalizeTextFontSize(node.attrs.baseTextFontSize)}}`;
+}
+
+function serializeAlignCell(node) {
+  return String.raw`\LOalignCell{${escapeMathArg(node.attrs.latex)}}{${normalizeMathFontFamily(node.attrs.fontFamily)}}{${normalizeMathFontSize(node.attrs.fontSize)}}{${normalizeTextFontSize(node.attrs.baseTextFontSize)}}`;
+}
+
+function serializeAlignRow(node) {
+  const cells = [];
+
+  node.forEach((child) => {
+    if (child.type === editorSchema.nodes.align_math) {
+      cells.push(serializeAlignCell(child));
+    }
+  });
+
+  while (cells.length < 2) {
+    cells.push(
+      serializeAlignCell(
+        editorSchema.nodes.align_math.create({
+          id: createParsedMathId("align-math"),
+        })
+      )
+    );
+  }
+
+  return String.raw`\LOalignRow{${cells.join(" & ")}}`;
+}
+
+function serializeAlignBlock(node) {
+  const rows = [];
+  const groupCount = Math.max(
+    1,
+    Number.parseInt(String(node.attrs.groupCount ?? 1), 10) || 1
+  );
+
+  node.forEach((child) => {
+    if (child.type === editorSchema.nodes.align_row) {
+      rows.push(serializeAlignRow(child));
+    }
+  });
+
+  return String.raw`\LOalign{${groupCount}}{` +
+    (rows.length > 0 ? `\n${rows.join("\n")}\n` : "\n") +
+    "}";
+}
+
+function serializeGatherCell(node) {
+  return String.raw`\LOgatherCell{${escapeMathArg(node.attrs.latex)}}{${normalizeMathFontFamily(node.attrs.fontFamily)}}{${normalizeMathFontSize(node.attrs.fontSize)}}{${normalizeTextFontSize(node.attrs.baseTextFontSize)}}`;
+}
+
+function serializeGatherRow(node) {
+  const cells = [];
+
+  node.forEach((child) => {
+    if (child.type === editorSchema.nodes.gather_math) {
+      cells.push(serializeGatherCell(child));
+    }
+  });
+
+  while (cells.length < 1) {
+    cells.push(
+      serializeGatherCell(
+        editorSchema.nodes.gather_math.create({
+          id: createParsedMathId("gather-math"),
+        })
+      )
+    );
+  }
+
+  return String.raw`\LOgatherRow{${cells.join(" \\qquad ")}}`;
+}
+
+function serializeGatherBlock(node) {
+  const rows = [];
+  const columnCount = Math.max(
+    1,
+    Number.parseInt(String(node.attrs.columnCount ?? 1), 10) || 1
+  );
+
+  node.forEach((child) => {
+    if (child.type === editorSchema.nodes.gather_row) {
+      rows.push(serializeGatherRow(child));
+    }
+  });
+
+  return String.raw`\LOgather{${columnCount}}{` +
+    (rows.length > 0 ? `\n${rows.join("\n")}\n` : "\n") +
+    "}";
+}
+
+function serializeTableCell(node) {
+  const blocks = [];
+
+  node.forEach((child) => {
+    const serialized = serializeBlockNode(child);
+
+    if (serialized) {
+      blocks.push(serialized);
+    }
+  });
+
+  return String.raw`\LOtableCell{` +
+    (blocks.length > 0 ? `\n${blocks.join("\n\n")}\n` : `\n${serializeParagraph(editorSchema.nodes.paragraph.createAndFill())}\n`) +
+    "}";
+}
+
+function serializeTableRow(node) {
+  const cells = [];
+
+  node.forEach((child) => {
+    if (child.type === editorSchema.nodes.table_cell) {
+      cells.push(serializeTableCell(child));
+    }
+  });
+
+  return String.raw`\LOtableRow{` +
+    (cells.length > 0 ? `\n${cells.join("\n")}\n` : "\n") +
+    "}";
+}
+
+function serializeTable(node) {
+  const rows = [];
+
+  node.forEach((child) => {
+    if (child.type === editorSchema.nodes.table_row) {
+      rows.push(serializeTableRow(child));
+    }
+  });
+
+  return String.raw`\LOtable{${normalizeTableStyle(node.attrs.tableStyle)}}{` +
+    (rows.length > 0 ? `\n${rows.join("\n")}\n` : "\n") +
+    "}";
+}
+
+function serializeBlockNode(node) {
+  if (node.type === editorSchema.nodes.paragraph) {
+    return serializeParagraph(node);
+  }
+
+  if (node.type === editorSchema.nodes.block_math) {
+    return serializeDisplayMath(node);
+  }
+
+  if (node.type === editorSchema.nodes.align_block) {
+    return serializeAlignBlock(node);
+  }
+
+  if (node.type === editorSchema.nodes.gather_block) {
+    return serializeGatherBlock(node);
+  }
+
+  if (node.type === editorSchema.nodes.table) {
+    return serializeTable(node);
+  }
+
+  if (
+    node.type === editorSchema.nodes.bullet_list ||
+    node.type === editorSchema.nodes.ordered_list
+  ) {
+    return serializeList(node);
+  }
+
+  return "";
+}
+
 function serializePageSettings(pageSettings) {
   const normalized = normalizePageSettings(pageSettings);
 
@@ -203,7 +423,7 @@ export function serializeDocumentToLatex(
   doc,
   pageSettings = createDefaultPageSettings()
 ) {
-  const paragraphs = [];
+  const blocks = [];
 
   doc.forEach((node) => {
     if (node.type !== editorSchema.nodes.page) {
@@ -211,28 +431,30 @@ export function serializeDocumentToLatex(
     }
 
     node.forEach((child) => {
-      if (child.type === editorSchema.nodes.paragraph) {
-        paragraphs.push(serializeParagraph(child));
+      const serialized = serializeBlockNode(child);
+
+      if (serialized) {
+        blocks.push(serialized);
       }
     });
   });
 
-  const documentBody = paragraphs.length > 0
-    ? paragraphs.join("\n\n")
+  const documentBody = blocks.length > 0
+    ? blocks.join("\n\n")
     : serializeParagraph(editorSchema.nodes.paragraph.createAndFill());
 
   return `${DOCUMENT_HEADER}${serializePageSettings(pageSettings)}\n\n${documentBody}\n${DOCUMENT_FOOTER}`;
 }
 
-function createPagedDocument(paragraphs) {
-  const safeParagraphs = paragraphs.length > 0
-    ? paragraphs
+function createPagedDocument(blocks) {
+  const safeBlocks = blocks.length > 0
+    ? blocks
     : [editorSchema.nodes.paragraph.createAndFill()];
 
   return editorSchema.nodes.doc.create(null, [
     editorSchema.nodes.page.create(
       { pageNumber: 1 },
-      safeParagraphs
+      safeBlocks
     ),
   ]);
 }
@@ -415,6 +637,7 @@ function parseParagraphBody(body) {
 
       content.push(
         editorSchema.nodes.inline_math.create({
+          id: createParsedMathId("math"),
           latex: decodeMathArg(latex),
           fontFamily: normalizeMathFontFamily(fontFamily),
           fontSize: normalizeMathFontSize(fontSize),
@@ -430,6 +653,421 @@ function parseParagraphBody(body) {
   return content;
 }
 
+function createEmptyParagraph() {
+  return editorSchema.nodes.paragraph.createAndFill();
+}
+
+function parseBlockSequence(source) {
+  const cursor = source instanceof LatexCursor ? source : new LatexCursor(source);
+  const blocks = [];
+
+  while (!cursor.done) {
+    if (cursor.consumeCommand("LOparagraph")) {
+      const alignment = cursor.readArgument();
+      const lineSpacing = cursor.readArgument();
+      const paragraphSpacing = cursor.readArgument();
+      const body = cursor.readArgument();
+
+      if (
+        alignment == null ||
+        lineSpacing == null ||
+        paragraphSpacing == null ||
+        body == null
+      ) {
+        break;
+      }
+
+      blocks.push(
+        editorSchema.nodes.paragraph.create(
+          {
+            alignment: normalizeTextAlignment(alignment),
+            lineSpacing: normalizeLineSpacing(lineSpacing),
+            paragraphSpacing: normalizeParagraphSpacing(paragraphSpacing),
+          },
+          parseParagraphBody(body)
+        )
+      );
+      continue;
+    }
+
+    if (cursor.consumeCommand("LOdisplayMath")) {
+      const latex = cursor.readArgument();
+      const fontFamily = cursor.readArgument();
+      const fontSize = cursor.readArgument();
+      const baseTextFontSize = cursor.readArgument();
+
+      if (
+        latex == null ||
+        fontFamily == null ||
+        fontSize == null ||
+        baseTextFontSize == null
+      ) {
+        break;
+      }
+
+      blocks.push(
+        editorSchema.nodes.block_math.create({
+          id: createParsedMathId("math"),
+          latex: decodeMathArg(latex),
+          fontFamily: normalizeMathFontFamily(fontFamily),
+          fontSize: normalizeMathFontSize(fontSize),
+          baseTextFontSize: normalizeTextFontSize(baseTextFontSize),
+        })
+      );
+      continue;
+    }
+
+    if (cursor.consumeCommand("LOalign")) {
+      const firstArg = cursor.readArgument();
+
+      if (firstArg == null) {
+        break;
+      }
+
+      let groupCount = Math.max(1, Number.parseInt(String(firstArg), 10) || 1);
+      let body = cursor.readArgument();
+
+      if (body == null) {
+        body = firstArg;
+        groupCount = 1;
+      }
+
+      const rowCursor = new LatexCursor(body);
+      const rows = [];
+
+      while (!rowCursor.done) {
+        if (!rowCursor.consumeCommand("LOalignRow")) {
+          rowCursor.index += 1;
+          continue;
+        }
+
+        const rowBody = rowCursor.readArgument();
+
+        if (rowBody == null) {
+          break;
+        }
+
+        const cellCursor = new LatexCursor(rowBody);
+        const cells = [];
+
+        while (!cellCursor.done) {
+          if (!cellCursor.consumeCommand("LOalignCell")) {
+            cellCursor.index += 1;
+            continue;
+          }
+
+          const latex = cellCursor.readArgument();
+          const fontFamily = cellCursor.readArgument();
+          const fontSize = cellCursor.readArgument();
+          const baseTextFontSize = cellCursor.readArgument();
+
+          if (
+            latex == null ||
+            fontFamily == null ||
+            fontSize == null ||
+            baseTextFontSize == null
+          ) {
+            break;
+          }
+
+          cells.push(
+            editorSchema.nodes.align_math.create({
+              id: createParsedMathId("align-math"),
+              latex: decodeMathArg(latex),
+              fontFamily: normalizeMathFontFamily(fontFamily),
+              fontSize: normalizeMathFontSize(fontSize),
+              baseTextFontSize: normalizeTextFontSize(baseTextFontSize),
+            })
+          );
+        }
+
+        const expectedCellCount = Math.max(2, groupCount * 2);
+
+        while (cells.length < expectedCellCount) {
+          cells.push(
+            editorSchema.nodes.align_math.create({
+              id: createParsedMathId("align-math"),
+            })
+          );
+        }
+
+        rows.push(
+          editorSchema.nodes.align_row.create(
+            null,
+            cells.slice(0, expectedCellCount)
+          )
+        );
+      }
+
+      blocks.push(
+        editorSchema.nodes.align_block.create(
+          { groupCount },
+          rows.length > 0
+            ? rows
+            : [
+                editorSchema.nodes.align_row.create(
+                  null,
+                  Array.from({ length: groupCount * 2 }, () =>
+                    editorSchema.nodes.align_math.create({
+                      id: createParsedMathId("align-math"),
+                    })
+                  )
+                ),
+              ]
+        )
+      );
+      continue;
+    }
+
+    if (cursor.consumeCommand("LOgather")) {
+      const rawColumnCount = cursor.readArgument();
+      const body = cursor.readArgument();
+
+      if (rawColumnCount == null || body == null) {
+        break;
+      }
+
+      const columnCount = Math.max(
+        1,
+        Number.parseInt(String(rawColumnCount), 10) || 1
+      );
+      const rowCursor = createLatexCursor(body);
+      const rows = [];
+
+      while (!rowCursor.done) {
+        if (!rowCursor.consumeCommand("LOgatherRow")) {
+          rowCursor.index += 1;
+          continue;
+        }
+
+        const rowBody = rowCursor.readArgument();
+
+        if (rowBody == null) {
+          break;
+        }
+
+        const cellCursor = createLatexCursor(rowBody);
+        const cells = [];
+
+        while (!cellCursor.done) {
+          if (!cellCursor.consumeCommand("LOgatherCell")) {
+            cellCursor.index += 1;
+            continue;
+          }
+
+          const latex = cellCursor.readArgument();
+          const fontFamily = cellCursor.readArgument();
+          const fontSize = cellCursor.readArgument();
+          const baseTextFontSize = cellCursor.readArgument();
+
+          if (
+            latex == null ||
+            fontFamily == null ||
+            fontSize == null ||
+            baseTextFontSize == null
+          ) {
+            break;
+          }
+
+          cells.push(
+            editorSchema.nodes.gather_math.create({
+              id: createParsedMathId("gather-math"),
+              latex: decodeMathArg(latex),
+              fontFamily: normalizeMathFontFamily(fontFamily),
+              fontSize: normalizeMathFontSize(fontSize),
+              baseTextFontSize: normalizeTextFontSize(baseTextFontSize),
+            })
+          );
+        }
+
+        const expectedCellCount = Math.max(1, columnCount);
+
+        while (cells.length < expectedCellCount) {
+          cells.push(
+            editorSchema.nodes.gather_math.create({
+              id: createParsedMathId("gather-math"),
+            })
+          );
+        }
+
+        rows.push(
+          editorSchema.nodes.gather_row.create(
+            null,
+            cells.slice(0, expectedCellCount)
+          )
+        );
+      }
+
+      blocks.push(
+        editorSchema.nodes.gather_block.create(
+          { columnCount },
+          rows.length > 0
+            ? rows
+            : [
+                editorSchema.nodes.gather_row.create(
+                  null,
+                  Array.from({ length: columnCount }, () =>
+                    editorSchema.nodes.gather_math.create({
+                      id: createParsedMathId("gather-math"),
+                    })
+                  )
+                ),
+              ]
+        )
+      );
+      continue;
+    }
+
+    if (cursor.consumeCommand("LOtable")) {
+      const firstArg = cursor.readArgument();
+
+      if (firstArg == null) {
+        break;
+      }
+
+      let tableStyle = normalizeTableStyle(firstArg);
+      let body = cursor.readArgument();
+
+      if (body == null) {
+        body = firstArg;
+        tableStyle = normalizeTableStyle(null);
+      }
+
+      const rowCursor = new LatexCursor(body);
+      const rows = [];
+
+      while (!rowCursor.done) {
+        if (!rowCursor.consumeCommand("LOtableRow")) {
+          rowCursor.index += 1;
+          continue;
+        }
+
+        const rowBody = rowCursor.readArgument();
+
+        if (rowBody == null) {
+          break;
+        }
+
+        const cellCursor = new LatexCursor(rowBody);
+        const cells = [];
+
+        while (!cellCursor.done) {
+          if (!cellCursor.consumeCommand("LOtableCell")) {
+            cellCursor.index += 1;
+            continue;
+          }
+
+          const cellBody = cellCursor.readArgument();
+
+          if (cellBody == null) {
+            break;
+          }
+
+          const cellBlocks = parseBlockSequence(cellBody);
+          cells.push(
+            editorSchema.nodes.table_cell.create(
+              null,
+              cellBlocks.length > 0 ? cellBlocks : [createEmptyParagraph()]
+            )
+          );
+        }
+
+        rows.push(
+          editorSchema.nodes.table_row.create(
+            null,
+            cells.length > 0
+              ? cells
+              : [
+                  editorSchema.nodes.table_cell.create(
+                    null,
+                    [createEmptyParagraph()]
+                  ),
+                ]
+          )
+        );
+      }
+
+      blocks.push(
+        editorSchema.nodes.table.create(
+          { tableStyle },
+          rows.length > 0
+            ? rows
+            : [
+                editorSchema.nodes.table_row.create(
+                  null,
+                  [
+                    editorSchema.nodes.table_cell.create(
+                      null,
+                      [createEmptyParagraph()]
+                    ),
+                  ]
+                ),
+              ]
+        )
+      );
+      continue;
+    }
+
+    if (cursor.consumeCommand("LOlist")) {
+      const listType = cursor.readArgument();
+      const body = cursor.readArgument();
+
+      if (listType == null || body == null) {
+        break;
+      }
+
+      const itemCursor = new LatexCursor(body);
+      const items = [];
+
+      while (!itemCursor.done) {
+        if (!itemCursor.consumeCommand("LOitem")) {
+          itemCursor.index += 1;
+          continue;
+        }
+
+        const itemBody = itemCursor.readArgument();
+
+        if (itemBody == null) {
+          break;
+        }
+
+        const itemBlocks = parseBlockSequence(itemBody);
+        items.push(
+          editorSchema.nodes.list_item.create(
+            null,
+            itemBlocks.length > 0 ? itemBlocks : [createEmptyParagraph()]
+          )
+        );
+      }
+
+      const normalizedListType = listType === "bullet"
+        ? "bullet"
+        : normalizeOrderedListStyle(listType);
+      const listNodeType = normalizedListType === "bullet"
+        ? editorSchema.nodes.bullet_list
+        : editorSchema.nodes.ordered_list;
+      const listAttrs = listNodeType === editorSchema.nodes.ordered_list
+        ? {
+            order: 1,
+            listStyle: normalizedListType,
+          }
+        : null;
+
+      blocks.push(
+        listNodeType.create(
+          listAttrs,
+          items.length > 0 ? items : [editorSchema.nodes.list_item.create(null, [createEmptyParagraph()])]
+        )
+      );
+      continue;
+    }
+
+    cursor.index += 1;
+  }
+
+  return blocks;
+}
+
 export function parseLatexDocument(source) {
   if (!source || !source.trim()) {
     return {
@@ -439,7 +1077,7 @@ export function parseLatexDocument(source) {
   }
 
   const cursor = new LatexCursor(extractDocumentBody(source));
-  const paragraphs = [];
+  const blocks = [];
   let pageSettings = createDefaultPageSettings();
 
   while (!cursor.done) {
@@ -498,41 +1136,17 @@ export function parseLatexDocument(source) {
       continue;
     }
 
-    if (!cursor.consumeCommand("LOparagraph")) {
+    const nextBlocks = parseBlockSequence(cursor);
+
+    if (nextBlocks.length === 0) {
       cursor.index += 1;
       continue;
     }
 
-    const alignment = cursor.readArgument();
-    const lineSpacing = cursor.readArgument();
-    const paragraphSpacing = cursor.readArgument();
-    const body = cursor.readArgument();
-
-    if (
-      alignment == null ||
-      lineSpacing == null ||
-      paragraphSpacing == null ||
-      body == null
-    ) {
-      return {
-        doc: createPagedDocument([]),
-        pageSettings: createDefaultPageSettings(),
-      };
-    }
-
-    const paragraph = editorSchema.nodes.paragraph.create(
-      {
-        alignment: normalizeTextAlignment(alignment),
-        lineSpacing: normalizeLineSpacing(lineSpacing),
-        paragraphSpacing: normalizeParagraphSpacing(paragraphSpacing),
-      },
-      parseParagraphBody(body)
-    );
-
-    paragraphs.push(paragraph);
+    blocks.push(...nextBlocks);
   }
 
-  if (paragraphs.length === 0) {
+  if (blocks.length === 0) {
     return {
       doc: createPagedDocument([]),
       pageSettings,
@@ -540,7 +1154,7 @@ export function parseLatexDocument(source) {
   }
 
   return {
-    doc: createPagedDocument(paragraphs),
+    doc: createPagedDocument(blocks),
     pageSettings,
   };
 }

@@ -28,6 +28,7 @@ import {
 } from "./src/editor/prosemirror/document.js";
 import { createPaperEditorController } from "./src/editor/prosemirror/controller.js";
 import { createEditorDebugger } from "./src/editor/prosemirror/debug.js";
+import { bindSlashItemSettingsUi } from "./src/editor/prosemirror/slash-item-settings-ui.js";
 import {
   bindEditorUi,
   renderViewModeUi,
@@ -58,14 +59,23 @@ const buildAssetUrls = [
   new URL("./src/core/storage.js", import.meta.url).href,
   new URL("./src/core/view-mode.js", import.meta.url).href,
   new URL("./src/core/zoom.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/backslash-commands/align.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/backslash-commands/gather.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/backslash-commands/math-grid.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/backslash-commands/table.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/controller.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/debug.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/document.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/grid-utils.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/latex.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/math-node-view.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/math-trigger-plugin.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/options.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/schema.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/slash-item-settings-ui.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/slash-items/context.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/slash-items/index.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/table-styles.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/ui.js", import.meta.url).href,
 ];
 
@@ -127,6 +137,10 @@ async function initializeApp() {
       normalizeViewMode
     );
 
+    let slashItemSettingsUi = {
+      render() {},
+    };
+
     const controller = createPaperEditorController({
       mount: editor,
       initialDoc: initialStoredState.doc,
@@ -136,8 +150,15 @@ async function initializeApp() {
       },
       MathfieldElementClass: MathfieldElement,
       onUiStateChange: renderToolbarState,
+      onSlashItemStateChange: (item) => {
+        slashItemSettingsUi.render(item);
+      },
       debug: editorDebugger,
     });
+    slashItemSettingsUi = bindSlashItemSettingsUi({
+      controller,
+    });
+    slashItemSettingsUi.render(controller.getActiveSlashItemState());
 
     const persistCurrentState = () => {
       storageController.saveDocument(

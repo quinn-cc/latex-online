@@ -107,6 +107,22 @@
           >
             U
           </button>
+          <label class="toolbar-field" for="text-list-type">
+            <span class="toolbar-field-label">List</span>
+            <select id="text-list-type" class="format-select">
+              <option value="none">Plain text</option>
+              <option value="bullet">Bullets</option>
+              <option value="decimal-period">1. 2. 3.</option>
+              <option value="decimal-paren">1) 2) 3)</option>
+              <option value="decimal-wrapped">(1) (2) (3)</option>
+              <option value="alpha-period">a. b. c.</option>
+              <option value="alpha-paren">a) b) c)</option>
+              <option value="alpha-wrapped">(a) (b) (c)</option>
+              <option value="roman-period">i. ii. iii.</option>
+              <option value="roman-paren">i) ii) iii)</option>
+              <option value="roman-wrapped">(i) (ii) (iii)</option>
+            </select>
+          </label>
           <button
             id="align-left"
             class="format-button alignment-button"
@@ -114,8 +130,11 @@
             data-align="left"
             aria-pressed="true"
             title="Align left"
+            aria-label="Align left"
           >
-            Left
+            <svg class="alignment-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2 3.5h8M2 6.5h11M2 9.5h8M2 12.5h11" />
+            </svg>
           </button>
           <button
             id="align-center"
@@ -124,8 +143,11 @@
             data-align="center"
             aria-pressed="false"
             title="Align center"
+            aria-label="Align center"
           >
-            Center
+            <svg class="alignment-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M4 3.5h8M2.5 6.5h11M4 9.5h8M2.5 12.5h11" />
+            </svg>
           </button>
           <button
             id="align-right"
@@ -134,8 +156,11 @@
             data-align="right"
             aria-pressed="false"
             title="Align right"
+            aria-label="Align right"
           >
-            Right
+            <svg class="alignment-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M6 3.5h8M3 6.5h11M6 9.5h8M3 12.5h11" />
+            </svg>
           </button>
           <button
             id="align-justify"
@@ -144,8 +169,11 @@
             data-align="justify"
             aria-pressed="false"
             title="Justify"
+            aria-label="Justify"
           >
-            Justify
+            <svg class="alignment-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2 3.5h12M2 6.5h12M2 9.5h12M2 12.5h12" />
+            </svg>
           </button>
           <label class="toolbar-field" for="text-font-family">
             <span class="toolbar-field-label">Text font</span>
@@ -386,6 +414,55 @@
         </button>
       </div>
     </aside>
+
+    <div id="slash-item-settings" class="slash-item-settings" hidden>
+      <button
+        id="slash-item-settings-toggle"
+        class="slash-item-settings-toggle"
+        type="button"
+        aria-label="Block settings"
+        title="Block settings"
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M9.7 1.3l.4 1.5c.3.1.7.3 1 .6l1.5-.4 1 1.8-1.1 1.1c0 .2.1.5.1.8s0 .6-.1.8l1.1 1.1-1 1.8-1.5-.4c-.3.3-.6.5-1 .6l-.4 1.5H6.3l-.4-1.5c-.4-.1-.7-.3-1-.6l-1.5.4-1-1.8L3.5 8c0-.2-.1-.5-.1-.8s0-.6.1-.8L2.4 5.3l1-1.8 1.5.4c.3-.3.6-.5 1-.6l.4-1.5h3.4zM8 5.7A2.3 2.3 0 1 0 8 10.3 2.3 2.3 0 0 0 8 5.7z"
+          />
+        </svg>
+      </button>
+      <div
+        id="slash-item-settings-panel"
+        class="slash-item-settings-panel"
+        role="dialog"
+        aria-modal="false"
+        aria-labelledby="slash-item-settings-title"
+        hidden
+      >
+        <div class="slash-item-settings-head">
+          <p id="slash-item-settings-title" class="slash-item-settings-title">Table</p>
+          <button
+            id="slash-item-settings-close"
+            class="slash-item-settings-close"
+            type="button"
+            aria-label="Close block settings"
+          >
+            ×
+          </button>
+        </div>
+        <form id="slash-item-settings-form" class="slash-item-settings-form">
+          <div id="slash-item-settings-fields" class="slash-item-settings-fields"></div>
+          <div class="slash-item-settings-actions">
+            <button id="slash-item-settings-apply" type="submit">Apply</button>
+            <button
+              id="slash-item-settings-delete"
+              class="secondary-button slash-item-settings-delete"
+              type="button"
+            >
+              Delete
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <aside class="debug-dock" id="debug-dock" aria-label="Debug console">
       <div class="debug-header">

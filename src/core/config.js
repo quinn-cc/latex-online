@@ -34,6 +34,22 @@ export const TEXT_PARAGRAPH_SPACING_OPTIONS = [
 export const TEXT_PARAGRAPH_SPACING_OPTIONS_BY_VALUE = new Map(
   TEXT_PARAGRAPH_SPACING_OPTIONS.map((option) => [option.value, option])
 );
+export const TEXT_LIST_TYPE_OPTIONS = [
+  { value: "none", label: "Plain text" },
+  { value: "bullet", label: "Bullets" },
+  { value: "decimal-period", label: "1. 2. 3." },
+  { value: "decimal-paren", label: "1) 2) 3)" },
+  { value: "decimal-wrapped", label: "(1) (2) (3)" },
+  { value: "alpha-period", label: "a. b. c." },
+  { value: "alpha-paren", label: "a) b) c)" },
+  { value: "alpha-wrapped", label: "(a) (b) (c)" },
+  { value: "roman-period", label: "i. ii. iii." },
+  { value: "roman-paren", label: "i) ii) iii)" },
+  { value: "roman-wrapped", label: "(i) (ii) (iii)" },
+];
+export const TEXT_LIST_TYPE_VALUES = new Set(
+  TEXT_LIST_TYPE_OPTIONS.map((option) => option.value)
+);
 export const TEXT_FONT_OPTIONS = [
   {
     value: "paper-serif",
@@ -85,6 +101,7 @@ export const DEFAULT_TEXT_TOOLBAR_STATE = {
   bold: false,
   italic: false,
   underline: false,
+  listType: "none",
   alignment: "left",
   lineSpacing: "1.15",
   paragraphSpacing: "0",

@@ -1,6 +1,7 @@
 import {
   DEFAULT_MATH_STYLE,
   DEFAULT_TEXT_TOOLBAR_STATE,
+  TEXT_LIST_TYPE_VALUES,
   MATH_FONT_FAMILY_VALUES,
   MATH_FONT_SIZE_VALUES,
   TEXT_FONT_OPTIONS,
@@ -17,6 +18,18 @@ export {
   TEXT_FONT_OPTIONS,
   TEXT_FONT_SIZE_OPTIONS,
 };
+
+const ORDERED_LIST_STYLE_VALUES = new Set([
+  "decimal-period",
+  "decimal-paren",
+  "decimal-wrapped",
+  "alpha-period",
+  "alpha-paren",
+  "alpha-wrapped",
+  "roman-period",
+  "roman-paren",
+  "roman-wrapped",
+]);
 
 export function normalizeTextFontFamily(value) {
   return TEXT_FONT_OPTIONS_BY_VALUE.has(value)
@@ -40,6 +53,32 @@ export function normalizeTextAlignment(value) {
       return "justify";
     default:
       return DEFAULT_TEXT_TOOLBAR_STATE.alignment;
+  }
+}
+
+export function normalizeTextListType(value) {
+  return TEXT_LIST_TYPE_VALUES.has(String(value ?? "").toLowerCase())
+    ? String(value ?? "").toLowerCase()
+    : DEFAULT_TEXT_TOOLBAR_STATE.listType;
+}
+
+export function normalizeOrderedListStyle(value) {
+  const normalized = String(value ?? "").toLowerCase();
+
+  switch (normalized) {
+    case "ordered":
+    case "decimal":
+      return "decimal-period";
+    case "alpha":
+    case "lower-alpha":
+      return "alpha-period";
+    case "roman":
+    case "lower-roman":
+      return "roman-period";
+    default:
+      return ORDERED_LIST_STYLE_VALUES.has(normalized)
+        ? normalized
+        : "decimal-period";
   }
 }
 

@@ -24,6 +24,28 @@ export const zoomOutButton = document.getElementById("zoom-out");
 export const zoomInButton = document.getElementById("zoom-in");
 export const zoomResetButton = document.getElementById("zoom-reset");
 export const zoomLevel = document.getElementById("zoom-level");
+export const slashItemSettings = document.getElementById("slash-item-settings");
+export const slashItemSettingsToggleButton = document.getElementById(
+  "slash-item-settings-toggle"
+);
+export const slashItemSettingsPanel = document.getElementById(
+  "slash-item-settings-panel"
+);
+export const slashItemSettingsTitle = document.getElementById(
+  "slash-item-settings-title"
+);
+export const slashItemSettingsCloseButton = document.getElementById(
+  "slash-item-settings-close"
+);
+export const slashItemSettingsForm = document.getElementById(
+  "slash-item-settings-form"
+);
+export const slashItemSettingsFields = document.getElementById(
+  "slash-item-settings-fields"
+);
+export const slashItemSettingsDeleteButton = document.getElementById(
+  "slash-item-settings-delete"
+);
 export const debugDock = document.getElementById("debug-dock");
 export const debugState = document.getElementById("debug-state");
 export const debugLog = document.getElementById("debug-log");
@@ -43,6 +65,7 @@ export const alignmentButtonsByValue = new Map(
 );
 export const textFontFamilySelect = document.getElementById("text-font-family");
 export const textFontSizeSelect = document.getElementById("text-font-size");
+export const textListTypeSelect = document.getElementById("text-list-type");
 export const textLineSpacingSelect = document.getElementById("text-line-spacing");
 export const textParagraphSpacingSelect = document.getElementById(
   "text-paragraph-spacing"
