@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>Latex Online</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "orderedmap": "./node_modules/orderedmap/dist/index.js",
+          "prosemirror-commands": "./node_modules/prosemirror-commands/dist/index.js",
+          "prosemirror-history": "./node_modules/prosemirror-history/dist/index.js",
+          "prosemirror-keymap": "./node_modules/prosemirror-keymap/dist/index.js",
+          "prosemirror-model": "./node_modules/prosemirror-model/dist/index.js",
+          "prosemirror-state": "./node_modules/prosemirror-state/dist/index.js",
+          "prosemirror-transform": "./node_modules/prosemirror-transform/dist/index.js",
+          "prosemirror-view": "./node_modules/prosemirror-view/dist/index.js",
+          "rope-sequence": "./node_modules/rope-sequence/dist/index.js",
+          "w3c-keyname": "./node_modules/w3c-keyname/index.js"
+        }
+      }
+    </script>
+    <style>
+      body {
+        visibility: hidden;
+      }
+
+      body.ready {
+        visibility: visible;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="toolbar" role="toolbar" aria-label="Text formatting">
+          <details class="file-menu" id="file-menu">
+            <summary class="secondary-button file-menu-trigger">File</summary>
+            <div class="file-menu-panel" role="menu" aria-label="File actions">
+              <button id="file-save" class="file-menu-item" type="button" role="menuitem">
+                Save .tex
+              </button>
+              <button class="file-menu-item" type="button" role="menuitem" disabled>
+                Open
+              </button>
+              <button class="file-menu-item" type="button" role="menuitem" disabled>
+                Export PDF
+              </button>
+              <button id="file-print" class="file-menu-item" type="button" role="menuitem">
+                Print
+              </button>
+            </div>
+          </details>
+          <details class="file-menu" id="edit-menu">
+            <summary class="secondary-button file-menu-trigger">Edit</summary>
+            <div class="file-menu-panel" role="menu" aria-label="Edit actions">
+              <button
+                id="edit-page-settings"
+                class="file-menu-item"
+                type="button"
+                role="menuitem"
+              >
+                Page...
+              </button>
+            </div>
+          </details>
+          <button
+            id="toggle-book-view"
+            class="secondary-button"
+            type="button"
+            aria-pressed="false"
+            title="Toggle book view"
+          >
+            Book view
+          </button>
+          <button
+            id="toggle-bold"
+            class="format-button"
+            type="button"
+            data-format="bold"
+            aria-pressed="false"
+            title="Bold (Ctrl+B)"
+          >
+            B
+          </button>
+          <button
+            id="toggle-italic"
+            class="format-button"
+            type="button"
+            data-format="italic"
+            aria-pressed="false"
+            title="Italic (Ctrl+I)"
+          >
+            I
+          </button>
+          <button
+            id="toggle-underline"
+            class="format-button"
+            type="button"
+            data-format="underline"
+            aria-pressed="false"
+            title="Underline (Ctrl+U)"
+          >
+            U
+          </button>
+          <button
+            id="align-left"
+            class="format-button alignment-button"
+            type="button"
+            data-align="left"
+            aria-pressed="true"
+            title="Align left"
+          >
+            Left
+          </button>
+          <button
+            id="align-center"
+            class="format-button alignment-button"
+            type="button"
+            data-align="center"
+            aria-pressed="false"
+            title="Align center"
+          >
+            Center
+          </button>
+          <button
+            id="align-right"
+            class="format-button alignment-button"
+            type="button"
+            data-align="right"
+            aria-pressed="false"
+            title="Align right"
+          >
+            Right
+          </button>
+          <button
+            id="align-justify"
+            class="format-button alignment-button"
+            type="button"
+            data-align="justify"
+            aria-pressed="false"
+            title="Justify"
+          >
+            Justify
+          </button>
+          <label class="toolbar-field" for="text-font-family">
+            <span class="toolbar-field-label">Text font</span>
+            <select id="text-font-family" class="format-select">
+              <option value="paper-serif">Paper Serif</option>
+              <option value="georgia">Georgia</option>
+              <option value="times-new-roman">Times New Roman</option>
+              <option value="avenir-next">Avenir Next</option>
+              <option value="trebuchet-ms">Trebuchet MS</option>
+              <option value="courier-new">Courier New</option>
+            </select>
+          </label>
+          <label class="toolbar-field" for="text-font-size">
+            <span class="toolbar-field-label">Text size</span>
+            <select id="text-font-size" class="format-select">
+              <option value="1">11</option>
+              <option value="2">12</option>
+              <option value="3">14</option>
+              <option value="4">16</option>
+              <option value="5">18</option>
+              <option value="6">20</option>
+              <option value="7">24</option>
+            </select>
+          </label>
+          <label class="toolbar-field" for="text-line-spacing">
+            <span class="toolbar-field-label">Line space</span>
+            <select id="text-line-spacing" class="format-select">
+              <option value="1">1x</option>
+              <option value="1.15">1.15x</option>
+              <option value="1.5">1.5x</option>
+              <option value="1.6">1.6x</option>
+              <option value="2">2x</option>
+            </select>
+          </label>
+          <label class="toolbar-field" for="text-paragraph-spacing">
+            <span class="toolbar-field-label">Para space</span>
+            <select id="text-paragraph-spacing" class="format-select">
+              <option value="0">0x</option>
+              <option value="0.5">0.5x</option>
+              <option value="1">1x</option>
+              <option value="1.5">1.5x</option>
+            </select>
+          </label>
+          <label class="toolbar-field" for="math-font-family">
+            <span class="toolbar-field-label">Math font</span>
+            <select id="math-font-family" class="format-select">
+              <option value="none">Default</option>
+              <option value="roman">Roman</option>
+              <option value="sans-serif">Sans Serif</option>
+              <option value="monospace">Monospace</option>
+            </select>
+          </label>
+          <label class="toolbar-field" for="math-font-size">
+            <span class="toolbar-field-label">Math size</span>
+            <select id="math-font-size" class="format-select">
+              <option value="0.8">x0.8</option>
+              <option value="0.9">x0.9</option>
+              <option value="1">x1</option>
+              <option value="1.1">x1.1</option>
+              <option value="1.25">x1.25</option>
+              <option value="1.4">x1.4</option>
+              <option value="1.6">x1.6</option>
+              <option value="1.85">x1.85</option>
+            </select>
+          </label>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section
+          class="paper-column"
+          id="paper-column"
+          aria-label="Editor workspace"
+        >
+          <div class="paper-stage" id="paper-stage">
+            <p class="sr-only" id="paper-editor-label">Paper editor</p>
+            <div id="paper-editor" class="paper-editor"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="page-settings-dialog" class="page-settings-dialog" aria-labelledby="page-settings-title">
+      <form id="page-settings-form" method="dialog" class="page-settings-form">
+        <div class="page-settings-head">
+          <div>
+            <p class="page-settings-kicker">Edit</p>
+            <h2 id="page-settings-title">Page setup</h2>
+          </div>
+          <button
+            id="page-settings-cancel"
+            class="secondary-button page-settings-close"
+            type="button"
+            aria-label="Close page setup"
+          >
+            Close
+          </button>
+        </div>
+        <div class="page-settings-grid">
+          <label class="page-settings-field" for="page-header-input">
+            <span class="page-settings-label">Header</span>
+            <input
+              id="page-header-input"
+              class="page-settings-input"
+              type="text"
+              maxlength="120"
+              placeholder="Document title or running header"
+            />
+          </label>
+          <label class="page-settings-field" for="page-footer-input">
+            <span class="page-settings-label">Footer</span>
+            <input
+              id="page-footer-input"
+              class="page-settings-input"
+              type="text"
+              maxlength="120"
+              placeholder="Notes, author, or footer text"
+            />
+          </label>
+          <label class="page-settings-field" for="page-numbering-select">
+            <span class="page-settings-label">Page numbering</span>
+            <select id="page-numbering-select" class="page-settings-input">
+              <option value="none">None</option>
+              <option value="header-right">Header right</option>
+              <option value="footer-center">Footer center</option>
+              <option value="footer-right">Footer right</option>
+            </select>
+          </label>
+          <label class="page-settings-field" for="page-columns-select">
+            <span class="page-settings-label">Columns</span>
+            <select id="page-columns-select" class="page-settings-input">
+              <option value="1">1 column</option>
+              <option value="2">2 columns</option>
+              <option value="3">3 columns</option>
+            </select>
+          </label>
+          <label class="page-settings-field" for="page-column-gap-input">
+            <span class="page-settings-label">Column spacing</span>
+            <input
+              id="page-column-gap-input"
+              class="page-settings-input"
+              type="number"
+              min="0.1"
+              max="2"
+              step="0.05"
+            />
+          </label>
+          <div class="page-settings-field page-settings-field-span-2">
+            <span class="page-settings-label">Margins (inches)</span>
+            <div class="page-margin-grid">
+              <label class="page-settings-field" for="page-margin-top-input">
+                <span class="page-settings-label page-settings-label-inline">Top</span>
+                <input
+                  id="page-margin-top-input"
+                  class="page-settings-input"
+                  type="number"
+                  min="0.25"
+                  max="3"
+                  step="0.05"
+                />
+              </label>
+              <label class="page-settings-field" for="page-margin-right-input">
+                <span class="page-settings-label page-settings-label-inline">Right</span>
+                <input
+                  id="page-margin-right-input"
+                  class="page-settings-input"
+                  type="number"
+                  min="0.25"
+                  max="3"
+                  step="0.05"
+                />
+              </label>
+              <label class="page-settings-field" for="page-margin-bottom-input">
+                <span class="page-settings-label page-settings-label-inline">Bottom</span>
+                <input
+                  id="page-margin-bottom-input"
+                  class="page-settings-input"
+                  type="number"
+                  min="0.25"
+                  max="3"
+                  step="0.05"
+                />
+              </label>
+              <label class="page-settings-field" for="page-margin-left-input">
+                <span class="page-settings-label page-settings-label-inline">Left</span>
+                <input
+                  id="page-margin-left-input"
+                  class="page-settings-input"
+                  type="number"
+                  min="0.25"
+                  max="3"
+                  step="0.05"
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="page-settings-actions">
+          <button id="page-settings-apply" type="submit">Apply</button>
+        </div>
+      </form>
+    </dialog>
+
+    <aside class="utility-dock" aria-label="Document controls">
+      <p id="save-status">Last saved: not yet</p>
+      <div class="utility-actions">
+        <div class="zoom-panel" role="group" aria-label="Page zoom">
+          <button
+            id="zoom-out"
+            class="secondary-button icon-button"
+            type="button"
+            title="Zoom out page (Ctrl/Cmd+-)"
+            aria-label="Zoom out page"
+          >
+            −
+          </button>
+          <button
+            id="zoom-reset"
+            class="secondary-button zoom-display"
+            type="button"
+            title="Reset page zoom (Ctrl/Cmd+0)"
+            aria-label="Reset page zoom"
+          >
+            <span id="zoom-level">100%</span>
+          </button>
+          <button
+            id="zoom-in"
+            class="secondary-button icon-button"
+            type="button"
+            title="Zoom in page (Ctrl/Cmd++)"
+            aria-label="Zoom in page"
+          >
+            +
+          </button>
+        </div>
+        <button id="clear-page" class="secondary-button utility-clear" type="button">
+          Clear page
+        </button>
+      </div>
+    </aside>
+
+    <aside class="debug-dock" id="debug-dock" aria-label="Debug console">
+      <div class="debug-header">
+        <p class="debug-title">Debug</p>
+        <div class="debug-actions">
+          <button id="debug-copy" class="secondary-button debug-clear" type="button">
+            Copy
+          </button>
+          <button id="debug-clear" class="secondary-button debug-clear" type="button">
+            Clear
+          </button>
+        </div>
+      </div>
+      <pre id="debug-state" class="debug-state"></pre>
+      <pre id="debug-log" class="debug-log"></pre>
+    </aside>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
