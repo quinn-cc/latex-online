@@ -30,7 +30,3 @@ export function createMathGridCellAttrs(prefix, controller, state, attrs = {}) {
     ...attrs,
   };
 }
-
-export function createPlainParagraphNode(schema, attrs) {
-  return schema.nodes.paragraph.createAndFill({ ...attrs });
-}

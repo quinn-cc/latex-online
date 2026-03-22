@@ -6,7 +6,6 @@ import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import {
   liftListItem,
-  sinkListItem,
   splitListItemKeepMarks,
   wrapInList,
 } from "../../../vendor/prosemirror-schema-list/dist/index.js";
@@ -15,37 +14,13 @@ import {
   normalizePageSettings,
   applyPageSettingsToPageElement,
 } from "../../core/page-settings.js";
-import {
-  DEFAULT_MATH_STYLE,
-  DEFAULT_TEXT_TOOLBAR_STATE,
-} from "../../core/config.js";
+import { DEFAULT_TEXT_TOOLBAR_STATE } from "../../core/config.js";
 import {
   createBackslashCommandRegistry,
+  getBackslashCommandSuggestions,
   getExecutableBackslashCommandMatch,
 } from "./backslash-commands/index.js";
 import {
-  createTableParagraphAttrs,
-  createResizedTableNode,
-  createTableNodeWithInsertedRow,
-  createTableNodeWithoutRow,
-  findTableCellTextPos,
-} from "./backslash-commands/table.js";
-import {
-  createAlignBlockWithInsertedRow,
-  extractAlignRelationOperator,
-  findAlignMathPos,
-  getAlignRelationCellIndex,
-  createResizedAlignBlock,
-  normalizeAlignGroupCount,
-} from "./backslash-commands/align.js";
-import {
-  createGatherBlockWithInsertedRow,
-  createResizedGatherBlock,
-  findGatherMathPos,
-  normalizeGatherColumnCount,
-} from "./backslash-commands/gather.js";
-import {
-  DisplayMathNodeView,
   InlineMathNodeView,
   AlignMathNodeView,
   GatherMathNodeView,
@@ -65,515 +40,48 @@ import {
   normalizeTextFontFamily,
   normalizeTextFontSize,
 } from "./options.js";
-import { normalizeTableStyle } from "./table-styles.js";
 import {
-  deleteSlashItem as deleteRegisteredSlashItem,
+  createDefaultGatherBlock,
+  findGatherMathPos,
+} from "./backslash-commands/gather.js";
+import { MathSession } from "./interactions/math-session.js";
+import {
+  arePageCountsEqual,
+  createBlockPositionList,
+  createEmptySelectionState,
+  createPageNode,
+  createSelectionAnchor,
+  flattenPageBlocks,
+  getCurrentPageBlockCounts,
+  measureBlockHeight,
+  resolveSelectionAnchor,
+} from "./page-layout.js";
+import {
   getActiveSlashItemState as getRegisteredSlashItemState,
-  getAlignContextAtPos,
-  getGatherContextAtPos,
-  getSlashWidgetTypeFromNode,
-  getTableAnchorIndices,
-  getTableContext,
-  updateSlashItemSettings as updateRegisteredSlashItemSettings,
 } from "./slash-items/index.js";
+import {
+  applyMathAttrs,
+  applyParagraphAttrs,
+  buildMarksFromToolbarState,
+  collectMathPositionsInRange,
+  collectParagraphPositions,
+  createLastTextContext,
+  createTextMarkTransaction,
+  createToolbarStateFromState,
+  documentHasContent,
+  getPrimaryParagraphInfo,
+  getPrimaryListInfo,
+  isMathNode,
+  isSelectionInEmptyListItem,
+  setStoredMarksFromToolbarState,
+} from "./state-helpers.js";
+import { widgetActionMethods } from "./widget-actions.js";
 
 let mathIdCounter = 0;
-
-function isMathNode(node) {
-  return (
-    node?.type === editorSchema.nodes.inline_math ||
-    node?.type === editorSchema.nodes.block_math ||
-    node?.type === editorSchema.nodes.align_math ||
-    node?.type === editorSchema.nodes.gather_math
-  );
-}
 
 function createMathId() {
   mathIdCounter += 1;
   return `math-${Date.now().toString(36)}-${mathIdCounter.toString(36)}`;
-}
-
-function createLastTextContext(toolbarState = createDefaultTextToolbarState(), schema = editorSchema) {
-  return {
-    toolbarState: { ...toolbarState },
-    marks: buildMarksFromToolbarState(toolbarState, schema),
-  };
-}
-
-function buildMarksFromToolbarState(toolbarState, schema) {
-  const marks = [];
-  const { marks: markTypes } = schema;
-
-  if (toolbarState.bold) {
-    marks.push(markTypes.bold.create());
-  }
-
-  if (toolbarState.italic) {
-    marks.push(markTypes.italic.create());
-  }
-
-  if (toolbarState.underline) {
-    marks.push(markTypes.underline.create());
-  }
-
-  if (toolbarState.fontFamily !== DEFAULT_TEXT_TOOLBAR_STATE.fontFamily) {
-    marks.push(markTypes.text_font_family.create({ value: toolbarState.fontFamily }));
-  }
-
-  if (toolbarState.fontSize !== DEFAULT_TEXT_TOOLBAR_STATE.fontSize) {
-    marks.push(markTypes.text_font_size.create({ value: toolbarState.fontSize }));
-  }
-
-  return marks;
-}
-
-function getMarkValue(marks, markType, fallbackValue) {
-  return marks.find((mark) => mark.type === markType)?.attrs?.value ?? fallbackValue;
-}
-
-function hasMark(marks, markType) {
-  return marks.some((mark) => mark.type === markType);
-}
-
-function getSelectionMarks(state) {
-  if (state.selection.empty) {
-    return state.storedMarks ?? state.selection.$from.marks();
-  }
-
-  return state.selection.$from.marks();
-}
-
-function getPrimaryParagraphInfo(state, anchorPos = null) {
-  const resolvedPos = anchorPos == null
-    ? state.selection.$from
-    : state.doc.resolve(anchorPos);
-
-  for (let depth = resolvedPos.depth; depth >= 0; depth -= 1) {
-    const node = resolvedPos.node(depth);
-
-    if (node.type === editorSchema.nodes.paragraph) {
-      return {
-        node,
-        pos: resolvedPos.before(depth),
-      };
-    }
-  }
-
-  return null;
-}
-
-function collectParagraphPositions(state, anchorFrom = null, anchorTo = null) {
-  if (anchorFrom != null && anchorTo != null) {
-    return collectParagraphPositionsInRange(state, anchorFrom, anchorTo);
-  }
-
-  if (!state.selection.empty) {
-    return collectParagraphPositionsInRange(state, state.selection.from, state.selection.to);
-  }
-
-  const paragraph = getPrimaryParagraphInfo(state);
-  return paragraph ? [paragraph.pos] : [];
-}
-
-function collectParagraphPositionsInRange(state, from, to) {
-  const positions = [];
-
-  state.doc.nodesBetween(from, to, (node, pos) => {
-    if (node.type === editorSchema.nodes.paragraph) {
-      positions.push(pos);
-    }
-  });
-
-  if (positions.length > 0) {
-    return positions;
-  }
-
-  const paragraph = getPrimaryParagraphInfo(state, from);
-  return paragraph ? [paragraph.pos] : [];
-}
-
-function collectMathPositionsInRange(state, from, to) {
-  const positions = [];
-
-  state.doc.nodesBetween(from, to, (node, pos) => {
-    if (isMathNode(node)) {
-      positions.push(pos);
-    }
-  });
-
-  return positions;
-}
-
-function getPrimaryListInfo(state, anchorPos = null) {
-  const resolvedPos = anchorPos == null
-    ? state.selection.$from
-    : state.doc.resolve(anchorPos);
-
-  for (let depth = resolvedPos.depth; depth >= 0; depth -= 1) {
-    const node = resolvedPos.node(depth);
-
-    if (
-      node.type === editorSchema.nodes.bullet_list ||
-      node.type === editorSchema.nodes.ordered_list
-    ) {
-      return {
-        node,
-        pos: resolvedPos.before(depth),
-      };
-    }
-  }
-
-  return null;
-}
-
-function getListToolbarType(node) {
-  if (!node) {
-    return DEFAULT_TEXT_TOOLBAR_STATE.listType;
-  }
-
-  if (node.type === editorSchema.nodes.bullet_list) {
-    return "bullet";
-  }
-
-  if (node.type === editorSchema.nodes.ordered_list) {
-    return normalizeOrderedListStyle(node.attrs.listStyle);
-  }
-
-  return DEFAULT_TEXT_TOOLBAR_STATE.listType;
-}
-
-function isSelectionInsideListItem(state) {
-  const resolvedPos = state.selection.$from;
-
-  for (let depth = resolvedPos.depth; depth >= 0; depth -= 1) {
-    if (resolvedPos.node(depth).type === editorSchema.nodes.list_item) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function isSelectionInEmptyListItem(state) {
-  if (!state.selection.empty || !isSelectionInsideListItem(state)) {
-    return false;
-  }
-
-  return state.selection.$from.parent.isTextblock &&
-    state.selection.$from.parent.content.size === 0;
-}
-
-function getTableParagraphAttrs(state) {
-  const paragraph = getPrimaryParagraphInfo(state)?.node;
-
-  if (paragraph) {
-    return createTableParagraphAttrs(paragraph.attrs);
-  }
-
-  return createTableParagraphAttrs({
-    alignment: DEFAULT_TEXT_TOOLBAR_STATE.alignment,
-    lineSpacing: DEFAULT_TEXT_TOOLBAR_STATE.lineSpacing,
-    paragraphSpacing: DEFAULT_TEXT_TOOLBAR_STATE.paragraphSpacing,
-  });
-}
-
-function getPageBlockBoundaryContext(state) {
-  const { selection } = state;
-
-  if (!(selection instanceof TextSelection) || !selection.empty) {
-    return null;
-  }
-
-  const { $from } = selection;
-
-  if (
-    $from.parent.type !== editorSchema.nodes.paragraph ||
-    $from.parentOffset !== 0
-  ) {
-    return null;
-  }
-
-  let blockPos = null;
-  let blockNode = null;
-
-  for (let depth = $from.depth; depth > 0; depth -= 1) {
-    if (
-      $from.node(depth).type === editorSchema.nodes.paragraph &&
-      $from.node(depth - 1).type === editorSchema.nodes.page
-    ) {
-      blockNode = $from.node(depth);
-      blockPos = $from.before(depth);
-      break;
-    }
-  }
-
-  if (!blockNode || blockPos == null) {
-    return null;
-  }
-
-  const blocks = createBlockPositionList(state.doc);
-  const blockIndex = blocks.findIndex((entry) => entry.pos === blockPos);
-
-  if (blockIndex === -1) {
-    return null;
-  }
-
-  return {
-    block: {
-      ...blocks[blockIndex],
-      index: blockIndex,
-    },
-    previousBlock: blockIndex > 0 ? blocks[blockIndex - 1] : null,
-  };
-}
-
-function createToolbarStateFromState(state, anchorPos = null) {
-  const marks = getSelectionMarks(state);
-  const paragraph = getPrimaryParagraphInfo(state, anchorPos);
-  const paragraphAttrs = paragraph?.node.attrs ?? DEFAULT_TEXT_TOOLBAR_STATE;
-  const list = getPrimaryListInfo(state, anchorPos);
-
-  return {
-    bold: hasMark(marks, editorSchema.marks.bold),
-    italic: hasMark(marks, editorSchema.marks.italic),
-    underline: hasMark(marks, editorSchema.marks.underline),
-    listType: getListToolbarType(list?.node),
-    alignment: normalizeTextAlignment(paragraphAttrs.alignment),
-    lineSpacing: normalizeLineSpacing(paragraphAttrs.lineSpacing),
-    paragraphSpacing: normalizeParagraphSpacing(paragraphAttrs.paragraphSpacing),
-    fontFamily: normalizeTextFontFamily(
-      getMarkValue(
-        marks,
-        editorSchema.marks.text_font_family,
-        DEFAULT_TEXT_TOOLBAR_STATE.fontFamily
-      )
-    ),
-    fontSize: normalizeTextFontSize(
-      getMarkValue(
-        marks,
-        editorSchema.marks.text_font_size,
-        DEFAULT_TEXT_TOOLBAR_STATE.fontSize
-      )
-    ),
-  };
-}
-
-function createEmptySelectionState(doc) {
-  return TextSelection.atStart(doc);
-}
-
-function createPageNode(blocks, pageNumber) {
-  return editorSchema.nodes.page.create(
-    { pageNumber },
-    blocks.length > 0 ? blocks : [editorSchema.nodes.paragraph.createAndFill()]
-  );
-}
-
-function flattenPageBlocks(doc) {
-  const blocks = [];
-
-  doc.forEach((pageNode) => {
-    if (pageNode.type !== editorSchema.nodes.page) {
-      return;
-    }
-
-    pageNode.forEach((blockNode) => {
-      blocks.push(blockNode);
-    });
-  });
-
-  return blocks;
-}
-
-function getCurrentPageBlockCounts(doc) {
-  const counts = [];
-
-  doc.forEach((pageNode) => {
-    if (pageNode.type === editorSchema.nodes.page) {
-      counts.push(pageNode.childCount);
-    }
-  });
-
-  return counts.length > 0 ? counts : [1];
-}
-
-function arePageCountsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  return left.every((count, index) => count === right[index]);
-}
-
-function createBlockPositionList(doc) {
-  const positions = [];
-
-  doc.forEach((pageNode, pagePos) => {
-    if (pageNode.type !== editorSchema.nodes.page) {
-      return;
-    }
-
-    pageNode.forEach((blockNode, blockOffset) => {
-      positions.push({
-        node: blockNode,
-        pos: pagePos + 1 + blockOffset,
-      });
-    });
-  });
-
-  return positions;
-}
-
-function measureBlockHeight(element) {
-  if (!(element instanceof HTMLElement)) {
-    return 0;
-  }
-
-  const styles = getComputedStyle(element);
-  const marginTop = Number.parseFloat(styles.marginTop || "0") || 0;
-  const marginBottom = Number.parseFloat(styles.marginBottom || "0") || 0;
-
-  return element.offsetHeight + marginTop + marginBottom;
-}
-
-function createSelectionAnchor(doc, pos, assoc = 1) {
-  const positions = createBlockPositionList(doc);
-  const clampedPos = Math.max(0, Math.min(pos, doc.content.size));
-
-  for (let index = 0; index < positions.length; index += 1) {
-    const entry = positions[index];
-    const start = entry.pos + 1;
-    const end = entry.pos + entry.node.nodeSize - 1;
-
-    if (clampedPos < start) {
-      return {
-        blockIndex: index,
-        innerOffset: 0,
-        assoc: -1,
-      };
-    }
-
-    if (clampedPos <= end) {
-      return {
-        blockIndex: index,
-        innerOffset: Math.max(0, Math.min(clampedPos - start, entry.node.content.size)),
-        assoc,
-      };
-    }
-  }
-
-  const lastEntry = positions.at(-1);
-
-  if (!lastEntry) {
-    return {
-      blockIndex: 0,
-      innerOffset: 0,
-      assoc: 1,
-    };
-  }
-
-  return {
-    blockIndex: positions.length - 1,
-    innerOffset: lastEntry.node.content.size,
-    assoc: 1,
-  };
-}
-
-function resolveSelectionAnchor(doc, anchor) {
-  const positions = createBlockPositionList(doc);
-  const entry = positions[Math.max(0, Math.min(anchor.blockIndex, positions.length - 1))];
-
-  if (!entry) {
-    return 1;
-  }
-
-  const pos = entry.pos + 1 + Math.max(0, Math.min(anchor.innerOffset, entry.node.content.size));
-  return Math.max(1, Math.min(pos, doc.content.size));
-}
-
-function setStoredMarksFromToolbarState(tr, toolbarState) {
-  tr.setStoredMarks(buildMarksFromToolbarState(toolbarState, editorSchema));
-}
-
-function createTextMarkTransaction(state, markType, nextValue, isDefaultValue) {
-  const tr = state.tr;
-  const { from, to, empty } = state.selection;
-
-  tr.removeMark(from, to, markType);
-
-  if (empty) {
-    const marks = (state.storedMarks ?? state.selection.$from.marks()).filter(
-      (mark) => mark.type !== markType
-    );
-
-    if (!isDefaultValue) {
-      marks.push(markType.create({ value: nextValue }));
-    }
-
-    tr.setStoredMarks(marks);
-    return tr;
-  }
-
-  if (!isDefaultValue) {
-    tr.addMark(from, to, markType.create({ value: nextValue }));
-  }
-
-  return tr;
-}
-
-function applyParagraphAttrs(tr, state, positions, patch) {
-  for (const pos of positions) {
-    const node = state.doc.nodeAt(pos);
-
-    if (!node || node.type !== editorSchema.nodes.paragraph) {
-      continue;
-    }
-
-    tr.setNodeMarkup(pos, null, {
-      ...node.attrs,
-      ...patch,
-    });
-  }
-}
-
-function applyMathAttrs(tr, state, positions, patch) {
-  for (const pos of positions) {
-    const node = state.doc.nodeAt(pos);
-
-    if (!isMathNode(node)) {
-      continue;
-    }
-
-    tr.setNodeMarkup(pos, null, {
-      ...node.attrs,
-      ...patch,
-    });
-  }
-}
-
-function documentHasContent(doc) {
-  let hasContent = false;
-
-  doc.descendants((node) => {
-    if (node.isText && node.text?.length) {
-      hasContent = true;
-      return false;
-    }
-
-    if (isMathNode(node)) {
-      hasContent = true;
-      return false;
-    }
-
-    if (node.type === editorSchema.nodes.table) {
-      hasContent = true;
-      return false;
-    }
-
-    return true;
-  });
-
-  return hasContent;
 }
 
 function describeDomNode(node) {
@@ -683,6 +191,62 @@ function createSplitParagraphCommand(controller) {
 }
 
 export class PaperEditorController {
+  get activeMathId() {
+    return this.mathSession.activeMathId;
+  }
+
+  set activeMathId(value) {
+    this.mathSession.activeMathId = value;
+  }
+
+  get lastFocusedMathId() {
+    return this.mathSession.lastFocusedMathId;
+  }
+
+  set lastFocusedMathId(value) {
+    this.mathSession.lastFocusedMathId = value;
+  }
+
+  get boundaryMathCaptureId() {
+    return this.mathSession.boundaryMathCaptureId;
+  }
+
+  set boundaryMathCaptureId(value) {
+    this.mathSession.boundaryMathCaptureId = value;
+  }
+
+  get boundaryMathCaptureDirection() {
+    return this.mathSession.boundaryMathCaptureDirection;
+  }
+
+  set boundaryMathCaptureDirection(value) {
+    this.mathSession.boundaryMathCaptureDirection = value;
+  }
+
+  get pendingMathFocusId() {
+    return this.mathSession.pendingMathFocusId;
+  }
+
+  set pendingMathFocusId(value) {
+    this.mathSession.pendingMathFocusId = value;
+  }
+
+  get pendingMathFocusEdge() {
+    return this.mathSession.pendingMathFocusEdge;
+  }
+
+  set pendingMathFocusEdge(value) {
+    this.mathSession.pendingMathFocusEdge = value;
+  }
+
+  get pendingMathFocusFrame() {
+    return this.mathSession.pendingMathFocusFrame;
+  }
+
+  set pendingMathFocusFrame(value) {
+    this.mathSession.pendingMathFocusFrame = value;
+  }
+
   constructor({
     mount,
     initialDoc,
@@ -690,6 +254,7 @@ export class PaperEditorController {
     saveDocument,
     MathfieldElementClass,
     onUiStateChange,
+    onBackslashMenuStateChange,
     onSlashItemStateChange,
     onPaginationChange,
     debug,
@@ -698,6 +263,7 @@ export class PaperEditorController {
     this.saveDocument = saveDocument;
     this.MathfieldElementClass = MathfieldElementClass;
     this.onUiStateChange = onUiStateChange;
+    this.onBackslashMenuStateChange = onBackslashMenuStateChange;
     this.onSlashItemStateChange = onSlashItemStateChange;
     this.onPaginationChange = onPaginationChange;
     this.pageSettings = normalizePageSettings(
@@ -705,13 +271,16 @@ export class PaperEditorController {
     );
     this.debug = debug;
     this.backslashCommands = createBackslashCommandRegistry(editorSchema);
+    this.backslashMenuSelectionIndex = 0;
+    this.backslashMenuDismissedKey = null;
+    this.lastBackslashMenuKey = null;
 
     this.mathViews = new Map();
-    this.activeMathId = null;
-    this.lastFocusedMathId = null;
-    this.pendingMathFocusId = null;
-    this.pendingMathFocusEdge = "start";
-    this.pendingMathFocusFrame = 0;
+    this.mathSession = new MathSession({
+      resolveMathTargetById: (id) => this.resolveMathTargetById(id),
+      getMathView: (id) => this.mathViews.get(id) ?? null,
+      debug: (type, detail) => this.debugLog(type, detail),
+    });
     this.pendingRepaginationFrame = 0;
     this.preservedTextSelection = null;
     this.currentMathStyle = createDefaultMathStyle();
@@ -739,22 +308,10 @@ export class PaperEditorController {
             exitMathNode: (pos, direction) => this.exitMathNode(pos, direction),
             handleMathBlur: (id, pos) => this.handleMathBlur(id, pos),
             handleMathFocus: (id, pos) => this.handleMathFocus(id, pos),
-            registerMathView: (id, nodeView) => this.registerMathView(id, nodeView),
-            removeMathNode: (pos, direction) => this.removeMathNode(pos, direction),
-            selectMathNode: (pos) => this.selectMathNode(pos),
-            shouldDebugLog: (type) => this.shouldDebugLog(type),
-            unregisterMathView: (id, nodeView) => this.unregisterMathView(id, nodeView),
-            debug: (type, detail) => this.debugLog(type, detail),
-          }),
-        block_math: (node, view, getPos) =>
-          new DisplayMathNodeView(node, view, getPos, {
-            MathfieldElementClass: this.MathfieldElementClass,
-            commitMathNode: (pos, patch) => this.commitMathNode(pos, patch),
-            commitAndExitMathNode: (pos, direction, patch) =>
-              this.commitAndExitMathNode(pos, direction, patch),
-            exitMathNode: (pos, direction) => this.exitMathNode(pos, direction),
-            handleMathBlur: (id, pos) => this.handleMathBlur(id, pos),
-            handleMathFocus: (id, pos) => this.handleMathFocus(id, pos),
+            handleBackslashMenuKey: (event, source) =>
+              this.handleBackslashMenuKey(event, source),
+            handleBackslashMenuChange: () => this.emitBackslashMenuState(),
+            handleMathStructureChange: () => this.emitSlashItemState(),
             registerMathView: (id, nodeView) => this.registerMathView(id, nodeView),
             removeMathNode: (pos, direction) => this.removeMathNode(pos, direction),
             selectMathNode: (pos) => this.selectMathNode(pos),
@@ -771,6 +328,12 @@ export class PaperEditorController {
             exitMathNode: (pos, direction) => this.exitMathNode(pos, direction),
             handleMathBlur: (id, pos) => this.handleMathBlur(id, pos),
             handleMathFocus: (id, pos) => this.handleMathFocus(id, pos),
+            handleBackslashMenuKey: (event, source) =>
+              this.handleBackslashMenuKey(event, source),
+            handleBackslashMenuChange: () => this.emitBackslashMenuState(),
+            handleMathStructureChange: () => this.emitSlashItemState(),
+            handleGridTab: (pos, direction, patch) =>
+              this.handleMathGridTab(pos, direction, patch),
             handleAlignEnter: (pos, patch) => this.handleAlignEnterFromMath(pos, patch),
             handleAlignShiftEnter: (pos, patch) =>
               this.insertAlignRowBelowFromMath(pos, patch),
@@ -790,6 +353,12 @@ export class PaperEditorController {
             exitMathNode: (pos, direction) => this.exitMathNode(pos, direction),
             handleMathBlur: (id, pos) => this.handleMathBlur(id, pos),
             handleMathFocus: (id, pos) => this.handleMathFocus(id, pos),
+            handleBackslashMenuKey: (event, source) =>
+              this.handleBackslashMenuKey(event, source),
+            handleBackslashMenuChange: () => this.emitBackslashMenuState(),
+            handleMathStructureChange: () => this.emitSlashItemState(),
+            handleGridTab: (pos, direction, patch) =>
+              this.handleMathGridTab(pos, direction, patch),
             handleGatherEnter: (pos, patch) => this.handleGatherEnterFromMath(pos, patch),
             handleGatherShiftEnter: (pos, patch) =>
               this.insertGatherRowBelowFromMath(pos, patch),
@@ -823,6 +392,7 @@ export class PaperEditorController {
     this.applyPageLayoutToDom();
     this.syncUi(false);
     this.emitUiState();
+    this.emitBackslashMenuState();
     this.emitSlashItemState();
     this.debugLog("controller.init", {
       selection: summarizePmSelection(this.view.state.selection),
@@ -853,7 +423,7 @@ export class PaperEditorController {
         "Shift-Backspace": () => this.handleShiftBackspace(),
         Tab: () => this.handleTab(false),
         "Shift-Tab": () => this.handleTab(true),
-        ArrowLeft: () => this.handleArrowIntoMath("left"),
+        ArrowLeft: () => this.handleArrowLeft(),
         ArrowRight: () => this.handleArrowIntoMath("right"),
       }),
       keymap(baseKeymap),
@@ -883,16 +453,18 @@ export class PaperEditorController {
   }
 
   clear() {
+    this.loadDocument(createEmptyDocument());
+    this.debugLog("controller.clear");
+  }
+
+  loadDocument(doc) {
     this.currentMathStyle = createDefaultMathStyle();
     this.lastTextContext = createLastTextContext(
       createDefaultTextToolbarState(),
       editorSchema
     );
-    this.activeMathId = null;
-    this.lastFocusedMathId = null;
-    this.pendingMathFocusId = null;
+    this.mathSession.reset();
     this.preservedTextSelection = null;
-    const doc = createEmptyDocument();
     const tr = this.view.state.tr.replaceWith(
       0,
       this.view.state.doc.content.size,
@@ -902,7 +474,9 @@ export class PaperEditorController {
     setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
     this.dispatchTransaction(tr);
     this.view.focus();
-    this.debugLog("controller.clear");
+    this.debugLog("controller.loadDocument", {
+      pageCount: doc.childCount,
+    });
   }
 
   applyPageLayoutToDom() {
@@ -1051,11 +625,57 @@ export class PaperEditorController {
     return this.deletePreviousWidgetBlock();
   }
 
+  getFallbackExecutableBackslashCommandMatch() {
+    const selection = this.view.state.selection;
+
+    if (!selection?.empty || !selection.$from?.parent) {
+      return null;
+    }
+
+    const paragraphNode = selection.$from.parent;
+
+    if (paragraphNode.type?.name !== "paragraph") {
+      return null;
+    }
+
+    const fullText = paragraphNode.textContent;
+    const trimmedText = fullText.trim();
+    const commandMatch = /^\\([A-Za-z]+)$/.exec(trimmedText);
+
+    if (!commandMatch) {
+      return null;
+    }
+
+    const commandName = commandMatch[1].toLowerCase();
+    const command = this.backslashCommands.commandsByName.get(commandName);
+
+    if (!command) {
+      return null;
+    }
+
+    const commandStart = fullText.lastIndexOf("\\");
+    const paragraphPos = selection.$from.before();
+
+    return {
+      command,
+      query: {
+        nameQuery: commandName,
+        commandStart,
+        fullText,
+        beforeText: fullText.slice(0, selection.$from.parentOffset),
+        afterText: fullText.slice(selection.$from.parentOffset),
+        paragraphNode,
+        paragraphPos,
+        parentNode: selection.$from.node(selection.$from.depth - 1),
+        parentIndex: selection.$from.index(selection.$from.depth - 1),
+      },
+    };
+  }
+
   executeBackslashCommandAtSelection() {
-    const match = getExecutableBackslashCommandMatch(
-      this.view.state,
-      this.backslashCommands
-    );
+    const match =
+      getExecutableBackslashCommandMatch(this.view.state, this.backslashCommands) ??
+      this.getFallbackExecutableBackslashCommandMatch();
 
     if (!match) {
       return false;
@@ -1099,1050 +719,245 @@ export class PaperEditorController {
     return true;
   }
 
-  handleTab(isShift) {
-    if (this.hasMathCapture()) {
+  executeBackslashCommandByName(commandName) {
+    const command = this.backslashCommands.commandsByName.get(commandName);
+    const query = getBackslashCommandSuggestions(
+      this.view.state,
+      this.backslashCommands
+    )?.queryData;
+
+    if (!command || !query) {
       return false;
     }
 
-    const tableContext = getTableContext(this.view.state);
+    const result = command.execute({
+      state: this.view.state,
+      match: query,
+      controller: this,
+    });
+    const tr = result?.tr ?? result;
 
-    if (tableContext) {
-      return isShift
-        ? this.moveToPreviousTableCellOrExit(tableContext)
-        : this.moveToNextTableCellOrExit(tableContext);
-    }
-
-    if (isSelectionInsideListItem(this.view.state)) {
-      const listItemType = editorSchema.nodes.list_item;
-      const command = isShift ? liftListItem(listItemType) : sinkListItem(listItemType);
-      return command(this.view.state, this.view.dispatch, this.view);
-    }
-
-    return isShift ? false : this.insertTab();
-  }
-
-  moveToNextTableCellOrExit(tableContext = getTableContext(this.view.state)) {
-    if (!tableContext) {
+    if (!tr) {
       return false;
     }
 
-    const rowIndex = tableContext.row.index;
-    const cellIndex = tableContext.cell.index;
-    const rowCount = tableContext.table.node.childCount;
-    const columnCount = tableContext.row.node.childCount;
-    const hasNextCellInRow = cellIndex < columnCount - 1;
-    const hasNextRow = rowIndex < rowCount - 1;
-
-    if (hasNextCellInRow) {
-      const nextSelectionPos = findTableCellTextPos(
-        tableContext.table.node,
-        tableContext.table.pos,
-        rowIndex,
-        cellIndex + 1
+    if (result?.focusMathId) {
+      this.prepareMathInsertion(
+        result.focusMathId,
+        this.getCurrentTextToolbarState(),
+        result.focusMathEdge ?? "start"
       );
-      const tr = this.view.state.tr.setSelection(
-        TextSelection.near(this.view.state.tr.doc.resolve(nextSelectionPos), 1)
-      );
-
-      setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-      this.debugLog("controller.moveToNextTableCell", {
-        tablePos: tableContext.table.pos,
-        rowIndex,
-        cellIndex,
-        nextRowIndex: rowIndex,
-        nextCellIndex: cellIndex + 1,
-      });
-      this.dispatchTransaction(tr);
-      this.focus();
-      return true;
     }
-
-    if (hasNextRow) {
-      const nextSelectionPos = findTableCellTextPos(
-        tableContext.table.node,
-        tableContext.table.pos,
-        rowIndex + 1,
-        0
-      );
-      const tr = this.view.state.tr.setSelection(
-        TextSelection.near(this.view.state.tr.doc.resolve(nextSelectionPos), 1)
-      );
-
-      setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-      this.debugLog("controller.moveToNextTableCell", {
-        tablePos: tableContext.table.pos,
-        rowIndex,
-        cellIndex,
-        nextRowIndex: rowIndex + 1,
-        nextCellIndex: 0,
-      });
-      this.dispatchTransaction(tr);
-      this.focus();
-      return true;
-    }
-
-    const exitPos = tableContext.table.pos + tableContext.table.node.nodeSize;
-    const tr = this.view.state.tr.setSelection(
-      TextSelection.near(this.view.state.tr.doc.resolve(exitPos), 1)
-    );
 
     setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-    this.debugLog("controller.exitTableOnTab", {
-      tablePos: tableContext.table.pos,
-      rowIndex,
-      cellIndex,
-      exitPos,
-    });
     this.dispatchTransaction(tr);
-    this.focus();
+
+    if (result?.focusMathId) {
+      this.focusMathNode(
+        result.focusMathId,
+        result.focusMathEdge ?? "start"
+      );
+    } else {
+      this.focus();
+    }
+
     return true;
   }
 
-  moveToPreviousTableCellOrExit(tableContext = getTableContext(this.view.state)) {
-    if (!tableContext) {
+  getBackslashMenuIdentity(menuState) {
+    if (!menuState) {
+      return null;
+    }
+
+    return JSON.stringify({
+      source: menuState.source,
+      mathId: menuState.mathId ?? null,
+      sessionKey: menuState.sessionKey ?? null,
+      query: menuState.query ?? "",
+      items: menuState.items?.map((item) => item.name) ?? [],
+    });
+  }
+
+  getRawBackslashMenuState() {
+    const mathTarget = this.getFocusedOrPendingMathTarget();
+    const activeMathView = mathTarget ? this.getMathView(mathTarget.id) : null;
+    const activeMathMenuState =
+      activeMathView?.getActiveBackslashMenuState?.() ?? null;
+
+    return mathTarget
+      ? activeMathMenuState
+      : getBackslashCommandSuggestions(this.view.state, this.backslashCommands);
+  }
+
+  syncBackslashMenuSession(rawMenuState) {
+    const menuKey = this.getBackslashMenuIdentity(rawMenuState);
+
+    if (!rawMenuState || !menuKey) {
+      this.lastBackslashMenuKey = null;
+      this.backslashMenuSelectionIndex = 0;
+      this.backslashMenuDismissedKey = null;
+      return null;
+    }
+
+    if (menuKey !== this.lastBackslashMenuKey) {
+      this.lastBackslashMenuKey = menuKey;
+      this.backslashMenuSelectionIndex = 0;
+      this.backslashMenuDismissedKey = null;
+    } else {
+      const maxIndex = Math.max(0, rawMenuState.items.length - 1);
+      this.backslashMenuSelectionIndex = Math.min(
+        this.backslashMenuSelectionIndex,
+        maxIndex
+      );
+    }
+
+    return menuKey;
+  }
+
+  getActiveBackslashMenuState() {
+    const rawMenuState = this.getRawBackslashMenuState();
+    const menuKey = this.syncBackslashMenuSession(rawMenuState);
+
+    if (!rawMenuState || !menuKey || this.backslashMenuDismissedKey === menuKey) {
+      return null;
+    }
+
+    return {
+      ...rawMenuState,
+      selectedIndex: Math.max(
+        0,
+        Math.min(
+          this.backslashMenuSelectionIndex,
+          Math.max(0, (rawMenuState.items?.length ?? 1) - 1)
+        )
+      ),
+    };
+  }
+
+  getBackslashMenuClientRect(menuState = null) {
+    const activeMenuState = menuState ?? this.getActiveBackslashMenuState();
+
+    if (!activeMenuState) {
+      return null;
+    }
+
+    if (activeMenuState.source === "math") {
+      const mathView = activeMenuState.mathId
+        ? this.getMathView(activeMenuState.mathId)
+        : null;
+      return mathView?.getBackslashMenuClientRect?.(activeMenuState) ?? null;
+    }
+
+    const selection = this.view.state.selection;
+    const coords = this.view.coordsAtPos(selection.from);
+
+    return {
+      top: coords.top,
+      right: coords.right,
+      bottom: coords.bottom,
+      left: coords.left,
+      width: Math.max(1, coords.right - coords.left),
+      height: Math.max(1, coords.bottom - coords.top),
+    };
+  }
+
+  setBackslashMenuSelectionIndex(index) {
+    const menuState = this.getActiveBackslashMenuState();
+
+    if (!menuState?.items?.length) {
       return false;
     }
 
-    const rowIndex = tableContext.row.index;
-    const cellIndex = tableContext.cell.index;
-    const hasPreviousCellInRow = cellIndex > 0;
-    const hasPreviousRow = rowIndex > 0;
-
-    if (hasPreviousCellInRow) {
-      const previousSelectionPos = findTableCellTextPos(
-        tableContext.table.node,
-        tableContext.table.pos,
-        rowIndex,
-        cellIndex - 1
-      );
-      const tr = this.view.state.tr.setSelection(
-        TextSelection.near(this.view.state.tr.doc.resolve(previousSelectionPos), 1)
-      );
-
-      setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-      this.debugLog("controller.moveToPreviousTableCell", {
-        tablePos: tableContext.table.pos,
-        rowIndex,
-        cellIndex,
-        nextRowIndex: rowIndex,
-        nextCellIndex: cellIndex - 1,
-      });
-      this.dispatchTransaction(tr);
-      this.focus();
-      return true;
-    }
-
-    if (hasPreviousRow) {
-      const previousRowIndex = rowIndex - 1;
-      const previousRow = tableContext.table.node.child(previousRowIndex);
-      const previousSelectionPos = findTableCellTextPos(
-        tableContext.table.node,
-        tableContext.table.pos,
-        previousRowIndex,
-        previousRow.childCount - 1
-      );
-      const tr = this.view.state.tr.setSelection(
-        TextSelection.near(this.view.state.tr.doc.resolve(previousSelectionPos), 1)
-      );
-
-      setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-      this.debugLog("controller.moveToPreviousTableCell", {
-        tablePos: tableContext.table.pos,
-        rowIndex,
-        cellIndex,
-        nextRowIndex: previousRowIndex,
-        nextCellIndex: previousRow.childCount - 1,
-      });
-      this.dispatchTransaction(tr);
-      this.focus();
-      return true;
-    }
-
-    const exitPos = tableContext.table.pos;
-    const tr = this.view.state.tr.setSelection(
-      TextSelection.near(this.view.state.tr.doc.resolve(exitPos), -1)
+    const nextIndex = Math.max(
+      0,
+      Math.min(Number.parseInt(String(index), 10) || 0, menuState.items.length - 1)
     );
 
-    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-    this.debugLog("controller.exitTableOnShiftTab", {
-      tablePos: tableContext.table.pos,
-      rowIndex,
-      cellIndex,
-      exitPos,
-    });
-    this.dispatchTransaction(tr);
-    this.focus();
+    if (nextIndex === this.backslashMenuSelectionIndex) {
+      return false;
+    }
+
+    this.backslashMenuSelectionIndex = nextIndex;
+    this.emitBackslashMenuState();
     return true;
   }
 
-  insertTableRowBelow() {
-    const tableContext = getTableContext(this.view.state);
+  applyBackslashMenuCommand(menuState, commandName = null) {
+    const activeMenuState = menuState ?? this.getActiveBackslashMenuState();
+    const nextCommandName =
+      commandName ??
+      activeMenuState?.items?.[activeMenuState?.selectedIndex ?? 0]?.name ??
+      null;
 
-    if (!tableContext) {
+    if (!activeMenuState || !nextCommandName) {
       return false;
     }
 
-    const rowIndex = tableContext.row.index;
-    const cellIndex = tableContext.cell.index;
-    const nextTable = createTableNodeWithInsertedRow(
-      editorSchema,
-      tableContext.table.node,
-      rowIndex,
-      getTableParagraphAttrs(this.view.state)
-    );
+    this.backslashMenuDismissedKey = null;
 
-    return this.replaceTableNode({
-      tablePos: tableContext.table.pos,
-      currentTableNode: tableContext.table.node,
-      nextTable,
-      nextRowIndex: rowIndex + 1,
-      nextCellIndex: cellIndex,
-      debugType: "controller.insertTableRowBelow",
-      debugDetail: {
-        rowIndex,
-        cellIndex,
-      },
-    });
-  }
+    if (activeMenuState.source === "math") {
+      const mathView = activeMenuState.mathId
+        ? this.getMathView(activeMenuState.mathId)
+        : null;
+      const didApply = mathView?.applyBackslashMenuCommand?.(nextCommandName) ?? false;
 
-  removeTableRowOrTable() {
-    const tableContext = getTableContext(this.view.state);
+      if (didApply) {
+        this.emitBackslashMenuState();
+      }
 
-    if (!tableContext) {
-      return false;
+      return didApply;
     }
 
-    const rowIndex = tableContext.row.index;
-    const cellIndex = tableContext.cell.index;
-    const rowCount = tableContext.table.node.childCount;
-
-    if (rowCount <= 1) {
-      return this.deleteTableAt(tableContext.table.pos, {
-        debugType: "controller.removeTableRowOrTable.deleteTable",
-      });
-    }
-    const nextTable = createTableNodeWithoutRow(
-      editorSchema,
-      tableContext.table.node,
-      rowIndex
-    );
-    const nextRowIndex = Math.max(0, rowIndex - 1);
-    const nextCellIndex = Math.min(cellIndex, nextTable.child(nextRowIndex).childCount - 1);
-
-    return this.replaceTableNode({
-      tablePos: tableContext.table.pos,
-      currentTableNode: tableContext.table.node,
-      nextTable,
-      nextRowIndex,
-      nextCellIndex,
-      debugType: "controller.removeTableRowOrTable.deleteRow",
-      debugDetail: {
-        rowIndex,
-        cellIndex,
-      },
-    });
+    return this.executeBackslashCommandByName(nextCommandName);
   }
 
-  deletePreviousWidgetBlock() {
-    const boundaryContext = getPageBlockBoundaryContext(this.view.state);
-    const previousWidgetType = getSlashWidgetTypeFromNode(
-      boundaryContext?.previousBlock?.node
-    );
-
-    if (!boundaryContext || !previousWidgetType) {
-      return false;
-    }
-
-    const { previousBlock, block } = boundaryContext;
-    const tr = this.view.state.tr.delete(
-      previousBlock.pos,
-      previousBlock.pos + previousBlock.node.nodeSize
-    );
-    const deletedSize = previousBlock.node.nodeSize;
-    const nextBlockPos = Math.max(0, block.pos - deletedSize);
-    const nextSelectionPos = Math.max(
-      1,
-      Math.min(nextBlockPos + 1, tr.doc.content.size)
-    );
-
-    tr.setSelection(TextSelection.near(tr.doc.resolve(nextSelectionPos), 1));
-    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-    this.debugLog("controller.deletePreviousWidgetBlock", {
-      deletedWidgetType: previousWidgetType,
-      deletedWidgetPos: previousBlock.pos,
-      nextBlockPos,
-      nextSelectionPos,
-    });
-    this.dispatchTransaction(tr);
-    this.focus();
-    return true;
-  }
-
-  replaceTableNode({
-    tablePos,
-    currentTableNode,
-    nextTable,
-    nextRowIndex = 0,
-    nextCellIndex = 0,
-    debugType = "controller.replaceTableNode",
-    debugDetail = {},
-  }) {
-    const tableNode = currentTableNode ?? this.view.state.doc.nodeAt(tablePos);
-
+  handleBackslashMenuKey(event, source) {
     if (
-      tableNode?.type !== editorSchema.nodes.table ||
-      nextTable?.type !== editorSchema.nodes.table
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey
     ) {
       return false;
     }
 
-    const tr = this.view.state.tr.replaceWith(
-      tablePos,
-      tablePos + tableNode.nodeSize,
-      nextTable
-    );
-    const nextSelectionPos = findTableCellTextPos(
-      nextTable,
-      tablePos,
-      nextRowIndex,
-      nextCellIndex
-    );
+    const menuState = this.getActiveBackslashMenuState();
 
-    tr.setSelection(TextSelection.near(tr.doc.resolve(nextSelectionPos), 1));
-    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-    this.debugLog(debugType, {
-      tablePos,
-      nextRowIndex,
-      nextCellIndex,
-      ...debugDetail,
-    });
-    this.dispatchTransaction(tr);
-    this.focus();
-    return true;
-  }
-
-  createMathNodeAttrsForState(state, initialLatex = "") {
-    const textToolbarState = this.hasMathCapture()
-      ? this.getCurrentTextToolbarState()
-      : createToolbarStateFromState(state);
-
-    return {
-      id: createMathId(),
-      latex: initialLatex,
-      fontFamily: this.currentMathStyle.fontFamily,
-      fontSize: this.currentMathStyle.fontSize,
-      baseTextFontSize: textToolbarState.fontSize,
-    };
-  }
-
-  replaceMathGridBlock({
-    blockPos,
-    currentBlockNode,
-    nextBlockNode,
-    blockNodeType,
-    mathNodeType,
-    findMathPos,
-    nextRowIndex = 0,
-    nextCellIndex = 0,
-    nextFocusEdge = "start",
-    debugType = "controller.replaceMathGridBlock",
-    debugDetail = {},
-    debugPositionKey = "blockPos",
-  }) {
-    const blockNode = currentBlockNode ?? this.view.state.doc.nodeAt(blockPos);
-
-    if (blockNode?.type !== blockNodeType || nextBlockNode?.type !== blockNodeType) {
+    if (!menuState || menuState.source !== source) {
       return false;
     }
 
-    const targetMathPos = findMathPos(
-      nextBlockNode,
-      blockPos,
-      nextRowIndex,
-      nextCellIndex
-    );
-    const targetMathRow = nextBlockNode.child(
-      Math.max(0, Math.min(nextRowIndex, nextBlockNode.childCount - 1))
-    );
-    const targetMathCellCount = targetMathRow?.childCount ?? 1;
-    const targetMathNode = targetMathRow?.child(
-      Math.max(0, Math.min(nextCellIndex, targetMathCellCount - 1))
-    );
-    const targetMathId = targetMathNode?.attrs?.id ?? null;
-    const tr = this.view.state.tr.replaceWith(
-      blockPos,
-      blockPos + blockNode.nodeSize,
-      nextBlockNode
-    );
-
-    if (targetMathPos != null) {
-      tr.setSelection(
-        TextSelection.near(
-          tr.doc.resolve(targetMathPos + (targetMathNode?.nodeSize ?? 1)),
-          -1
-        )
-      );
-    }
-
-    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-
-    if (targetMathId && targetMathNode?.type === mathNodeType) {
-      this.activeMathId = null;
-      this.lastFocusedMathId = targetMathId;
-      this.pendingMathFocusId = targetMathId;
-      this.pendingMathFocusEdge = nextFocusEdge;
-      this.preservedTextSelection = null;
-    }
-
-    this.debugLog(debugType, {
-      [debugPositionKey]: blockPos,
-      nextRowIndex,
-      nextCellIndex,
-      targetMathId,
-      ...debugDetail,
-    });
-    this.dispatchTransaction(tr);
-
-    if (targetMathId && targetMathNode?.type === mathNodeType) {
-      this.focusMathNode(targetMathId, nextFocusEdge);
+    if (event.key === "Escape") {
+      const menuKey = this.getBackslashMenuIdentity(menuState);
+      this.backslashMenuDismissedKey = menuKey;
+      event.preventDefault();
+      event.stopPropagation();
+      this.emitBackslashMenuState();
       return true;
     }
 
-    this.focus();
-    return true;
-  }
-
-  moveToMathGridCellFromMath(
-    pos,
-    nextRowIndex,
-    nextCellIndex,
-    patch = null,
-    {
-      getContextAtPos,
-      findMathPos,
-      mathNodeType,
-      focusEdge = "start",
-      debugType = "controller.moveToMathGridCellFromMath",
-      debugDetail = {},
-    } = {}
-  ) {
-    const currentNode = this.view.state.doc.nodeAt(pos);
-
-    if (currentNode?.type !== mathNodeType) {
-      return false;
-    }
-
-    const nextPatch = patch
-      ? Object.fromEntries(
-          Object.entries(patch).filter(([key, value]) => currentNode.attrs[key] !== value)
-        )
-      : null;
-    const context = getContextAtPos(this.view.state.doc, pos);
-
-    if (!context) {
-      return false;
-    }
-
-    const targetMathPos = findMathPos(
-      context.block.node,
-      context.block.pos,
-      nextRowIndex,
-      nextCellIndex
-    );
-    const targetMathNode = this.view.state.doc.nodeAt(targetMathPos);
-    const targetMathId = targetMathNode?.attrs?.id ?? null;
-
-    if (!targetMathId || targetMathNode?.type !== mathNodeType) {
-      return false;
-    }
-
-    const tr = this.view.state.tr;
-
-    if (nextPatch && Object.keys(nextPatch).length > 0) {
-      tr.setNodeMarkup(pos, null, {
-        ...currentNode.attrs,
-        ...nextPatch,
-      });
-    }
-
-    tr.setSelection(
-      TextSelection.near(
-        tr.doc.resolve(targetMathPos + targetMathNode.nodeSize),
-        -1
-      )
-    );
-    setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-    this.activeMathId = null;
-    this.lastFocusedMathId = targetMathId;
-    this.pendingMathFocusId = targetMathId;
-    this.pendingMathFocusEdge = focusEdge;
-    this.preservedTextSelection = null;
-    this.debugLog(debugType, {
-      pos,
-      nextRowIndex,
-      nextCellIndex,
-      targetMathId,
-      focusEdge,
-      ...debugDetail,
-    });
-    this.dispatchTransaction(tr);
-    this.focusMathNode(targetMathId, focusEdge);
-    return true;
-  }
-
-  handleMathGridExit(
-    pos,
-    direction,
-    patch = null,
-    {
-      getContextAtPos,
-      findMathPos,
-      mathNodeType,
-      debugPrefix = "controller.handleMathGridExit",
-    } = {}
-  ) {
-    const node = this.view.state.doc.nodeAt(pos);
-
-    if (node?.type !== mathNodeType) {
-      return false;
-    }
-
-    const nextPatch = patch
-      ? Object.fromEntries(
-          Object.entries(patch).filter(([key, value]) => node.attrs[key] !== value)
-        )
-      : null;
-    const context = getContextAtPos(this.view.state.doc, pos);
-
-    if (!context) {
-      return false;
-    }
-
-    const rowIndex = context.row.index;
-    const cellIndex = context.cell.index;
-    const rowCount = context.block.node.childCount;
-    const columnCount = context.row.node.childCount;
-    const moveForward = direction !== "before";
-    const tr = this.view.state.tr;
-
-    if (nextPatch && Object.keys(nextPatch).length > 0) {
-      tr.setNodeMarkup(pos, null, {
-        ...node.attrs,
-        ...nextPatch,
-      });
-    }
-
-    if (moveForward) {
-      const hasNextCellInRow = cellIndex < columnCount - 1;
-      const hasNextRow = rowIndex < rowCount - 1;
-
-      if (hasNextCellInRow || hasNextRow) {
-        const nextRowIndex = hasNextCellInRow ? rowIndex : rowIndex + 1;
-        const nextCellIndex = hasNextCellInRow ? cellIndex + 1 : 0;
-        const targetMathPos = findMathPos(
-          context.block.node,
-          context.block.pos,
-          nextRowIndex,
-          nextCellIndex
-        );
-        const targetMathNode = this.view.state.doc.nodeAt(targetMathPos);
-        const targetMathId = targetMathNode?.attrs?.id ?? null;
-
-        if (targetMathId && targetMathNode?.type === mathNodeType) {
-          tr.setSelection(
-            TextSelection.near(
-              tr.doc.resolve(targetMathPos + targetMathNode.nodeSize),
-              -1
-            )
-          );
-          setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-          this.activeMathId = null;
-          this.lastFocusedMathId = targetMathId;
-          this.pendingMathFocusId = targetMathId;
-          this.pendingMathFocusEdge = "start";
-          this.preservedTextSelection = null;
-          this.debugLog(`${debugPrefix}.moveForward`, {
-            pos,
-            rowIndex,
-            cellIndex,
-            nextRowIndex,
-            nextCellIndex,
-            targetMathId,
-          });
-          this.dispatchTransaction(tr);
-          this.focusMathNode(targetMathId, "start");
-          return true;
-        }
-      }
-
-      const exitPos = context.block.pos + context.block.node.nodeSize;
-
-      tr.setSelection(TextSelection.near(tr.doc.resolve(exitPos), 1));
-      setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-      this.preservedTextSelection = {
-        from: tr.selection.from,
-        to: tr.selection.to,
-      };
-      this.activeMathId = null;
-      this.cancelPendingMathFocus();
-      this.debugLog(`${debugPrefix}.exitAfter`, {
-        pos,
-        rowIndex,
-        cellIndex,
-        exitPos,
-      });
-      this.dispatchTransaction(tr);
-      this.focusEditorAfterMathExit({ immediate: true });
+    if (event.key === "ArrowDown" || (!event.shiftKey && event.key === "Tab")) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.setBackslashMenuSelectionIndex(menuState.selectedIndex + 1);
       return true;
     }
 
-    const hasPreviousCellInRow = cellIndex > 0;
-    const hasPreviousRow = rowIndex > 0;
-
-    if (hasPreviousCellInRow || hasPreviousRow) {
-      const previousRowIndex = hasPreviousCellInRow ? rowIndex : rowIndex - 1;
-      const previousCellIndex = hasPreviousCellInRow
-        ? cellIndex - 1
-        : context.block.node.child(previousRowIndex).childCount - 1;
-      const targetMathPos = findMathPos(
-        context.block.node,
-        context.block.pos,
-        previousRowIndex,
-        previousCellIndex
-      );
-      const targetMathNode = this.view.state.doc.nodeAt(targetMathPos);
-      const targetMathId = targetMathNode?.attrs?.id ?? null;
-
-      if (targetMathId && targetMathNode?.type === mathNodeType) {
-        tr.setSelection(
-          TextSelection.near(
-            tr.doc.resolve(targetMathPos + targetMathNode.nodeSize),
-            -1
-          )
-        );
-        setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-        this.activeMathId = null;
-        this.lastFocusedMathId = targetMathId;
-        this.pendingMathFocusId = targetMathId;
-        this.pendingMathFocusEdge = "end";
-        this.preservedTextSelection = null;
-        this.debugLog(`${debugPrefix}.moveBackward`, {
-          pos,
-          rowIndex,
-          cellIndex,
-          previousRowIndex,
-          previousCellIndex,
-          targetMathId,
-        });
-        this.dispatchTransaction(tr);
-        this.focusMathNode(targetMathId, "end");
-        return true;
-      }
+    if (event.key === "ArrowUp" || (event.shiftKey && event.key === "Tab")) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.setBackslashMenuSelectionIndex(menuState.selectedIndex - 1);
+      return true;
     }
 
-    const exitPos = context.block.pos;
-
-    tr.setSelection(TextSelection.near(tr.doc.resolve(exitPos), -1));
-    setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-    this.preservedTextSelection = {
-      from: tr.selection.from,
-      to: tr.selection.to,
-    };
-    this.activeMathId = null;
-    this.cancelPendingMathFocus();
-    this.debugLog(`${debugPrefix}.exitBefore`, {
-      pos,
-      rowIndex,
-      cellIndex,
-      exitPos,
-    });
-    this.dispatchTransaction(tr);
-    this.focusEditorAfterMathExit({ immediate: true });
-    return true;
-  }
-
-  exitMathGridAfterBlock(
-    pos,
-    patch = null,
-    {
-      getContextAtPos,
-      mathNodeType,
-      debugType = "controller.exitMathGridAfterBlock",
-    } = {}
-  ) {
-    const node = this.view.state.doc.nodeAt(pos);
-
-    if (node?.type !== mathNodeType) {
-      return false;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      return this.applyBackslashMenuCommand(menuState);
     }
 
-    const nextPatch = patch
-      ? Object.fromEntries(
-          Object.entries(patch).filter(([key, value]) => node.attrs[key] !== value)
-        )
-      : null;
-    const context = getContextAtPos(this.view.state.doc, pos);
-
-    if (!context) {
-      return false;
-    }
-
-    const tr = this.view.state.tr;
-
-    if (nextPatch && Object.keys(nextPatch).length > 0) {
-      tr.setNodeMarkup(pos, null, {
-        ...node.attrs,
-        ...nextPatch,
-      });
-    }
-
-    const exitPos = context.block.pos + context.block.node.nodeSize;
-
-    tr.setSelection(TextSelection.near(tr.doc.resolve(exitPos), 1));
-    setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-    this.preservedTextSelection = {
-      from: tr.selection.from,
-      to: tr.selection.to,
-    };
-    this.activeMathId = null;
-    this.cancelPendingMathFocus();
-    this.debugLog(debugType, {
-      pos,
-      rowIndex: context.row.index,
-      cellIndex: context.cell.index,
-      exitPos,
-    });
-    this.dispatchTransaction(tr);
-    this.focusEditorAfterMathExit({ immediate: true });
-    return true;
-  }
-
-  replaceAlignBlock({
-    alignPos,
-    currentAlignBlock,
-    nextAlignBlock,
-    nextRowIndex = 0,
-    nextCellIndex = 0,
-    nextFocusEdge = "start",
-    debugType = "controller.replaceAlignBlock",
-    debugDetail = {},
-  }) {
-    return this.replaceMathGridBlock({
-      blockPos: alignPos,
-      currentBlockNode: currentAlignBlock,
-      nextBlockNode: nextAlignBlock,
-      blockNodeType: editorSchema.nodes.align_block,
-      mathNodeType: editorSchema.nodes.align_math,
-      findMathPos: findAlignMathPos,
-      nextRowIndex,
-      nextCellIndex,
-      nextFocusEdge,
-      debugType,
-      debugDetail,
-      debugPositionKey: "alignPos",
-    });
-  }
-
-  insertAlignRowBelowFromMath(pos, patch = null) {
-    const currentNode = this.view.state.doc.nodeAt(pos);
-
-    if (currentNode?.type !== editorSchema.nodes.align_math) {
-      return false;
-    }
-
-    const nextPatch = patch
-      ? Object.fromEntries(
-          Object.entries(patch).filter(([key, value]) => currentNode.attrs[key] !== value)
-        )
-      : null;
-
-    if (nextPatch && Object.keys(nextPatch).length > 0) {
-      this.commitMathNode(pos, nextPatch);
-    }
-
-    const context = getAlignContextAtPos(this.view.state.doc, pos);
-
-    if (!context) {
-      return false;
-    }
-
-    const rowIndex = context.row.index;
-    const cellIndex = context.cell.index;
-    const relationCellIndex = Math.min(
-      getAlignRelationCellIndex(cellIndex),
-      context.row.node.childCount - 1
-    );
-    const relationCellNode = context.row.node.child(relationCellIndex);
-    const relationSourceLatex =
-      cellIndex === relationCellIndex
-        ? nextPatch?.latex ?? currentNode.attrs.latex
-        : relationCellNode?.attrs?.latex;
-    const relationOperator = extractAlignRelationOperator(relationSourceLatex);
-    const seededCellAttrs = relationOperator
-      ? {
-          [relationCellIndex]: this.createMathNodeAttrsForState(
-            this.view.state,
-            relationOperator
-          ),
-        }
-      : null;
-
-    const nextAlignBlock = createAlignBlockWithInsertedRow(
-      editorSchema,
-      context.block.node,
-      rowIndex,
-      () => this.createMathNodeAttrsForState(this.view.state),
-      seededCellAttrs
-    );
-    const nextFocusEdge =
-      relationOperator && cellIndex === relationCellIndex ? "end" : "start";
-
-    return this.replaceAlignBlock({
-      alignPos: context.block.pos,
-      currentAlignBlock: context.block.node,
-      nextAlignBlock,
-      nextRowIndex: rowIndex + 1,
-      nextCellIndex: cellIndex,
-      nextFocusEdge,
-      debugType: "controller.insertAlignRowBelowFromMath",
-      debugDetail: {
-        rowIndex,
-        cellIndex,
-        relationCellIndex,
-        relationSourceLatex,
-        relationOperator,
-      },
-    });
-  }
-
-  moveToAlignCellFromMath(
-    pos,
-    nextRowIndex,
-    nextCellIndex,
-    patch = null,
-    {
-      focusEdge = "start",
-      debugType = "controller.moveToAlignCellFromMath",
-      debugDetail = {},
-    } = {}
-  ) {
-    return this.moveToMathGridCellFromMath(pos, nextRowIndex, nextCellIndex, patch, {
-      getContextAtPos: getAlignContextAtPos,
-      findMathPos: findAlignMathPos,
-      mathNodeType: editorSchema.nodes.align_math,
-      focusEdge,
-      debugType,
-      debugDetail,
-    });
-  }
-
-  handleAlignEnterFromMath(pos, patch = null) {
-    const currentNode = this.view.state.doc.nodeAt(pos);
-
-    if (currentNode?.type !== editorSchema.nodes.align_math) {
-      return false;
-    }
-
-    const nextPatch = patch
-      ? Object.fromEntries(
-          Object.entries(patch).filter(([key, value]) => currentNode.attrs[key] !== value)
-        )
-      : null;
-
-    if (nextPatch && Object.keys(nextPatch).length > 0) {
-      this.commitMathNode(pos, nextPatch);
-    }
-
-    const context = getAlignContextAtPos(this.view.state.doc, pos);
-
-    if (!context) {
-      return false;
-    }
-
-    const rowIndex = context.row.index;
-    const cellIndex = context.cell.index;
-    const hasNextRow = rowIndex < context.block.node.childCount - 1;
-
-    if (hasNextRow) {
-      return this.moveToAlignCellFromMath(
-        pos,
-        rowIndex + 1,
-        cellIndex,
-        null,
-        {
-          debugType: "controller.handleAlignEnterFromMath.moveDown",
-          debugDetail: {
-            rowIndex,
-            cellIndex,
-          },
-        }
-      );
-    }
-
-    return this.exitMathGridAfterBlock(pos, nextPatch, {
-      getContextAtPos: getAlignContextAtPos,
-      mathNodeType: editorSchema.nodes.align_math,
-      debugType: "controller.handleAlignEnterFromMath.exitAfter",
-    });
-  }
-
-  handleAlignMathExit(pos, direction, patch = null) {
-    return this.handleMathGridExit(pos, direction, patch, {
-      getContextAtPos: getAlignContextAtPos,
-      findMathPos: findAlignMathPos,
-      mathNodeType: editorSchema.nodes.align_math,
-      debugPrefix: "controller.handleAlignMathExit",
-    });
-  }
-
-  replaceGatherBlock({
-    gatherPos,
-    currentGatherBlock,
-    nextGatherBlock,
-    nextRowIndex = 0,
-    nextCellIndex = 0,
-    nextFocusEdge = "start",
-    debugType = "controller.replaceGatherBlock",
-    debugDetail = {},
-  }) {
-    return this.replaceMathGridBlock({
-      blockPos: gatherPos,
-      currentBlockNode: currentGatherBlock,
-      nextBlockNode: nextGatherBlock,
-      blockNodeType: editorSchema.nodes.gather_block,
-      mathNodeType: editorSchema.nodes.gather_math,
-      findMathPos: findGatherMathPos,
-      nextRowIndex,
-      nextCellIndex,
-      nextFocusEdge,
-      debugType,
-      debugDetail,
-      debugPositionKey: "gatherPos",
-    });
-  }
-
-  insertGatherRowBelowFromMath(pos, patch = null) {
-    const currentNode = this.view.state.doc.nodeAt(pos);
-
-    if (currentNode?.type !== editorSchema.nodes.gather_math) {
-      return false;
-    }
-
-    const nextPatch = patch
-      ? Object.fromEntries(
-          Object.entries(patch).filter(([key, value]) => currentNode.attrs[key] !== value)
-        )
-      : null;
-
-    if (nextPatch && Object.keys(nextPatch).length > 0) {
-      this.commitMathNode(pos, nextPatch);
-    }
-
-    const context = getGatherContextAtPos(this.view.state.doc, pos);
-
-    if (!context) {
-      return false;
-    }
-
-    const nextGatherBlock = createGatherBlockWithInsertedRow(
-      editorSchema,
-      context.block.node,
-      context.row.index,
-      () => this.createMathNodeAttrsForState(this.view.state)
-    );
-
-    return this.replaceGatherBlock({
-      gatherPos: context.block.pos,
-      currentGatherBlock: context.block.node,
-      nextGatherBlock,
-      nextRowIndex: context.row.index + 1,
-      nextCellIndex: context.cell.index,
-      debugType: "controller.insertGatherRowBelowFromMath",
-      debugDetail: {
-        rowIndex: context.row.index,
-        cellIndex: context.cell.index,
-      },
-    });
-  }
-
-  moveToGatherCellFromMath(
-    pos,
-    nextRowIndex,
-    nextCellIndex,
-    patch = null,
-    {
-      focusEdge = "start",
-      debugType = "controller.moveToGatherCellFromMath",
-      debugDetail = {},
-    } = {}
-  ) {
-    return this.moveToMathGridCellFromMath(pos, nextRowIndex, nextCellIndex, patch, {
-      getContextAtPos: getGatherContextAtPos,
-      findMathPos: findGatherMathPos,
-      mathNodeType: editorSchema.nodes.gather_math,
-      focusEdge,
-      debugType,
-      debugDetail,
-    });
-  }
-
-  handleGatherEnterFromMath(pos, patch = null) {
-    const currentNode = this.view.state.doc.nodeAt(pos);
-
-    if (currentNode?.type !== editorSchema.nodes.gather_math) {
-      return false;
-    }
-
-    const nextPatch = patch
-      ? Object.fromEntries(
-          Object.entries(patch).filter(([key, value]) => currentNode.attrs[key] !== value)
-        )
-      : null;
-
-    if (nextPatch && Object.keys(nextPatch).length > 0) {
-      this.commitMathNode(pos, nextPatch);
-    }
-
-    const context = getGatherContextAtPos(this.view.state.doc, pos);
-
-    if (!context) {
-      return false;
-    }
-
-    const rowIndex = context.row.index;
-    const cellIndex = context.cell.index;
-    const hasNextRow = rowIndex < context.block.node.childCount - 1;
-
-    if (hasNextRow) {
-      return this.moveToGatherCellFromMath(
-        pos,
-        rowIndex + 1,
-        cellIndex,
-        null,
-        {
-          debugType: "controller.handleGatherEnterFromMath.moveDown",
-          debugDetail: {
-            rowIndex,
-            cellIndex,
-          },
-        }
-      );
-    }
-
-    return this.exitMathGridAfterBlock(pos, nextPatch, {
-      getContextAtPos: getGatherContextAtPos,
-      mathNodeType: editorSchema.nodes.gather_math,
-      debugType: "controller.handleGatherEnterFromMath.exitAfter",
-    });
-  }
-
-  handleGatherMathExit(pos, direction, patch = null) {
-    return this.handleMathGridExit(pos, direction, patch, {
-      getContextAtPos: getGatherContextAtPos,
-      findMathPos: findGatherMathPos,
-      mathNodeType: editorSchema.nodes.gather_math,
-      debugPrefix: "controller.handleGatherMathExit",
-    });
+    return false;
   }
 
   getActiveSlashItemState() {
@@ -2150,6 +965,15 @@ export class PaperEditorController {
   }
 
   getSlashItemClientRect(itemOrPos) {
+    if (
+      itemOrPos &&
+      typeof itemOrPos === "object" &&
+      itemOrPos.source === "math-structure"
+    ) {
+      const mathView = itemOrPos.mathId ? this.getMathView(itemOrPos.mathId) : null;
+      return mathView?.getSettingsItemClientRect?.(itemOrPos) ?? null;
+    }
+
     const itemPos = typeof itemOrPos === "number" ? itemOrPos : itemOrPos?.pos;
 
     if (!Number.isFinite(itemPos)) {
@@ -2178,284 +1002,27 @@ export class PaperEditorController {
     };
   }
 
-  updateSlashItemSettings(item, settings) {
-    return updateRegisteredSlashItemSettings(this, item, settings);
-  }
-
-  updateAlignSettings(alignPos, settings) {
-    const alignNode = this.view.state.doc.nodeAt(alignPos);
-
-    if (alignNode?.type !== editorSchema.nodes.align_block) {
-      this.debugLog("controller.updateAlignSettings.missingNode", {
-        alignPos,
-        settings,
-        foundType: alignNode?.type?.name ?? null,
-      });
+  updateMathArraySettings(item, settings) {
+    if (item?.source !== "math-structure") {
       return false;
     }
 
-    const rowCount = Math.max(
-      1,
-      Number.parseInt(String(alignNode.childCount), 10) || alignNode.childCount || 1
-    );
-    const currentGroupCount = normalizeAlignGroupCount(
-      alignNode.attrs.groupCount,
-      Math.ceil((alignNode.firstChild?.childCount ?? 2) / 2)
-    );
-    const groupCount = normalizeAlignGroupCount(
-      settings?.columnCount ?? currentGroupCount,
-      currentGroupCount
-    );
-    const anchorTarget = this.getFocusedOrPendingMathTarget();
-    const alignContext = anchorTarget?.node?.type === editorSchema.nodes.align_math
-      ? getAlignContextAtPos(this.view.state.doc, anchorTarget.pos)
-      : null;
-    this.debugLog("controller.updateAlignSettings.begin", {
-      alignPos,
-      settings,
-      currentGroupCount,
-      nextGroupCount: groupCount,
-      rowCount,
-      anchorTarget: anchorTarget
-        ? {
-            id: anchorTarget.id,
-            pos: anchorTarget.pos,
-            type: anchorTarget.node?.type?.name ?? null,
-          }
-        : null,
-      alignContext: alignContext
-        ? {
-            rowIndex: alignContext.row.index,
-            cellIndex: alignContext.cell.index,
-          }
-        : null,
-    });
-    const nextAlignBlock = createResizedAlignBlock(
-      editorSchema,
-      alignNode,
-      rowCount,
-      groupCount,
-      () => this.createMathNodeAttrsForState(this.view.state)
-    );
-    const nextRowIndex = Math.max(
-      0,
-      Math.min(alignContext?.row.index ?? 0, rowCount - 1)
-    );
-    let nextCellIndex = Math.max(
-      0,
-      Math.min(alignContext?.cell.index ?? 0, groupCount * 2 - 1)
-    );
-
-    if (!alignContext && groupCount > currentGroupCount) {
-      nextCellIndex = Math.max(
-        0,
-        Math.min(currentGroupCount * 2, groupCount * 2 - 1)
-      );
-    }
-
-    return this.replaceAlignBlock({
-      alignPos,
-      currentAlignBlock: alignNode,
-      nextAlignBlock,
-      nextRowIndex,
-      nextCellIndex,
-      debugType: "controller.updateAlignSettings",
-      debugDetail: {
-        rowCount,
-        groupCount,
-      },
-    });
+    const mathView = item.mathId ? this.getMathView(item.mathId) : null;
+    return mathView?.updateMathArraySettings?.(item, settings) ?? false;
   }
 
-  updateGatherSettings(gatherPos, settings) {
-    const gatherNode = this.view.state.doc.nodeAt(gatherPos);
+  createMathNodeAttrsForState(state, initialLatex = "") {
+    const textToolbarState = this.hasMathCapture()
+      ? this.getCurrentTextToolbarState()
+      : createToolbarStateFromState(state);
 
-    if (gatherNode?.type !== editorSchema.nodes.gather_block) {
-      return false;
-    }
-
-    const rowCount = Math.max(
-      1,
-      Number.parseInt(String(gatherNode.childCount), 10) || gatherNode.childCount || 1
-    );
-    const currentColumnCount = normalizeGatherColumnCount(
-      gatherNode.attrs.columnCount,
-      gatherNode.firstChild?.childCount ?? 1
-    );
-    const columnCount = normalizeGatherColumnCount(
-      settings?.columnCount ?? currentColumnCount,
-      currentColumnCount
-    );
-    const anchorTarget = this.getFocusedOrPendingMathTarget();
-    const gatherContext = anchorTarget?.node?.type === editorSchema.nodes.gather_math
-      ? getGatherContextAtPos(this.view.state.doc, anchorTarget.pos)
-      : null;
-    const nextGatherBlock = createResizedGatherBlock(
-      editorSchema,
-      gatherNode,
-      rowCount,
-      columnCount,
-      () => this.createMathNodeAttrsForState(this.view.state)
-    );
-    const nextRowIndex = Math.max(
-      0,
-      Math.min(gatherContext?.row.index ?? 0, rowCount - 1)
-    );
-    let nextCellIndex = Math.max(
-      0,
-      Math.min(gatherContext?.cell.index ?? 0, columnCount - 1)
-    );
-
-    if (!gatherContext && columnCount > currentColumnCount) {
-      nextCellIndex = Math.max(
-        0,
-        Math.min(currentColumnCount, columnCount - 1)
-      );
-    }
-
-    return this.replaceGatherBlock({
-      gatherPos,
-      currentGatherBlock: gatherNode,
-      nextGatherBlock,
-      nextRowIndex,
-      nextCellIndex,
-      debugType: "controller.updateGatherSettings",
-      debugDetail: {
-        rowCount,
-        columnCount,
-      },
-    });
-  }
-
-  updateTableSettings(tablePos, settings) {
-    const tableNode = this.view.state.doc.nodeAt(tablePos);
-
-    if (tableNode?.type !== editorSchema.nodes.table) {
-      return false;
-    }
-
-    const rowCount = Math.max(
-      1,
-      Number.parseInt(String(settings?.rowCount ?? tableNode.childCount), 10) ||
-        tableNode.childCount
-    );
-    const columnCount = Math.max(
-      1,
-      Number.parseInt(
-        String(settings?.columnCount ?? tableNode.firstChild?.childCount ?? 1),
-        10
-      ) || tableNode.firstChild?.childCount || 1
-    );
-    const tableStyle = normalizeTableStyle(
-      settings?.tableStyle ?? tableNode.attrs.tableStyle
-    );
-    const nextTable = createResizedTableNode(
-      editorSchema,
-      tableNode,
-      rowCount,
-      columnCount,
-      getTableParagraphAttrs(this.view.state),
-      {
-        ...tableNode.attrs,
-        tableStyle,
-      }
-    );
-    const anchor = getTableAnchorIndices(this.view.state, tablePos) ?? {
-      rowIndex: 0,
-      cellIndex: 0,
+    return {
+      id: createMathId(),
+      latex: initialLatex,
+      fontFamily: this.currentMathStyle.fontFamily,
+      fontSize: this.currentMathStyle.fontSize,
+      baseTextFontSize: textToolbarState.fontSize,
     };
-    const nextRowIndex = Math.min(anchor.rowIndex, rowCount - 1);
-    const nextCellIndex = Math.min(anchor.cellIndex, columnCount - 1);
-
-    return this.replaceTableNode({
-      tablePos,
-      currentTableNode: tableNode,
-      nextTable,
-      nextRowIndex,
-      nextCellIndex,
-      debugType: "controller.updateTableSettings",
-      debugDetail: {
-        rowCount,
-        columnCount,
-        tableStyle,
-      },
-    });
-  }
-
-  deleteSlashItem(item) {
-    return deleteRegisteredSlashItem(this, item);
-  }
-
-  deleteAlignAt(alignPos, options = {}) {
-    const alignNode = this.view.state.doc.nodeAt(alignPos);
-
-    if (alignNode?.type !== editorSchema.nodes.align_block) {
-      return false;
-    }
-
-    const tr = this.view.state.tr.delete(alignPos, alignPos + alignNode.nodeSize);
-    const nextSelectionPos = Math.max(
-      1,
-      Math.min(alignPos, tr.doc.content.size)
-    );
-
-    tr.setSelection(TextSelection.near(tr.doc.resolve(nextSelectionPos), 1));
-    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-    this.debugLog(options.debugType ?? "controller.deleteAlignAt", {
-      alignPos,
-      nextSelectionPos,
-    });
-    this.dispatchTransaction(tr);
-    this.focus();
-    return true;
-  }
-
-  deleteGatherAt(gatherPos, options = {}) {
-    const gatherNode = this.view.state.doc.nodeAt(gatherPos);
-
-    if (gatherNode?.type !== editorSchema.nodes.gather_block) {
-      return false;
-    }
-
-    const tr = this.view.state.tr.delete(gatherPos, gatherPos + gatherNode.nodeSize);
-    const nextSelectionPos = Math.max(
-      1,
-      Math.min(gatherPos, tr.doc.content.size)
-    );
-
-    tr.setSelection(TextSelection.near(tr.doc.resolve(nextSelectionPos), 1));
-    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-    this.debugLog(options.debugType ?? "controller.deleteGatherAt", {
-      gatherPos,
-      nextSelectionPos,
-    });
-    this.dispatchTransaction(tr);
-    this.focus();
-    return true;
-  }
-
-  deleteTableAt(tablePos, options = {}) {
-    const tableNode = this.view.state.doc.nodeAt(tablePos);
-
-    if (tableNode?.type !== editorSchema.nodes.table) {
-      return false;
-    }
-
-    const tr = this.view.state.tr.delete(tablePos, tablePos + tableNode.nodeSize);
-    const nextSelectionPos = Math.max(
-      1,
-      Math.min(tablePos, tr.doc.content.size)
-    );
-
-    tr.setSelection(TextSelection.near(tr.doc.resolve(nextSelectionPos), 1));
-    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-    this.debugLog(options.debugType ?? "controller.deleteTableAt", {
-      tablePos,
-      nextSelectionPos,
-    });
-    this.dispatchTransaction(tr);
-    this.focus();
-    return true;
   }
 
   toggleTextMark(markName) {
@@ -3007,43 +1574,31 @@ export class PaperEditorController {
       return false;
     }
 
+    if (node.attrs.id && this.boundaryMathCaptureId === node.attrs.id) {
+      this.clearBoundaryMathCapture();
+    }
+
     if (node.type === editorSchema.nodes.align_math) {
-      return this.handleAlignMathExit(pos, direction);
+      return this.handleAlignMathExit(pos, direction, null, {
+        deleteWhenEmpty: true,
+      });
     }
 
     if (node.type === editorSchema.nodes.gather_math) {
-      return this.handleGatherMathExit(pos, direction);
+      return this.handleGatherMathExit(pos, direction, null, {
+        deleteWhenEmpty: true,
+      });
     }
 
-    const nodeId = node.attrs.id;
-    let tr = this.view.state.tr.delete(pos, pos + node.nodeSize);
-    const targetPos = direction === "before" ? pos : pos;
-    const resolvedPos = Math.max(0, Math.min(targetPos, tr.doc.content.size));
-    tr = tr.setSelection(TextSelection.near(tr.doc.resolve(resolvedPos), direction === "before" ? -1 : 1));
-    setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-    this.preservedTextSelection = {
-      from: tr.selection.from,
-      to: tr.selection.to,
-    };
-
-    if (this.activeMathId === nodeId) {
-      this.cancelPendingMathFocus();
-      this.activeMathId = null;
+    if (node.type === editorSchema.nodes.inline_math) {
+      return this.deleteInlineMathAt(pos, direction, {
+        debugDetail: {
+          requestedBy: "controller.removeMathNode",
+        },
+      });
     }
 
-    if (this.lastFocusedMathId === nodeId) {
-      this.lastFocusedMathId = null;
-    }
-
-    this.debugLog("controller.removeMathNode", {
-      pos,
-      direction,
-      nodeId,
-      targetSelection: summarizePmSelection(tr.selection),
-    });
-    this.dispatchTransaction(tr);
-    this.focusEditorAfterMathExit();
-    return true;
+    return false;
   }
 
   exitMathNode(pos, direction) {
@@ -3090,6 +1645,7 @@ export class PaperEditorController {
       to: tr.selection.to,
     };
     this.activeMathId = null;
+    this.clearBoundaryMathCapture();
     this.cancelPendingMathFocus();
     this.debugLog("controller.commitAndExitMathNode", {
       pos,
@@ -3104,12 +1660,7 @@ export class PaperEditorController {
   }
 
   handleMathFocus(id, pos) {
-    this.cancelPendingMathFocusFrame();
-    if (this.pendingMathFocusId === id) {
-      this.pendingMathFocusId = null;
-    }
-    this.activeMathId = id;
-    this.lastFocusedMathId = id;
+    this.mathSession.handleFocus(id);
     this.preservedTextSelection = null;
     const node = this.view.state.doc.nodeAt(pos);
 
@@ -3129,14 +1680,13 @@ export class PaperEditorController {
       mathTarget: summarizeMathTarget(this.getMathTarget()),
     });
     this.emitUiState();
+    this.emitBackslashMenuState();
     this.emitSlashItemState();
     this.updateDebugState("controller.handleMathFocus");
   }
 
-  handleMathBlur(id, pos) {
-    if (this.activeMathId === id) {
-      this.activeMathId = null;
-    }
+  handleMathBlur(id, pos, options = {}) {
+    this.mathSession.handleBlur(id, options);
 
     const node = this.view.state.doc.nodeAt(pos);
 
@@ -3156,6 +1706,7 @@ export class PaperEditorController {
       mathTarget: summarizeMathTarget(this.getMathTarget()),
     });
     this.emitUiState();
+    this.emitBackslashMenuState();
     this.emitSlashItemState();
     this.updateDebugState("controller.handleMathBlur");
     this.scheduleRepagination();
@@ -3174,6 +1725,14 @@ export class PaperEditorController {
     if (this.pendingMathFocusId === id) {
       this.scheduleMathFocus(id, this.pendingMathFocusEdge);
     }
+  }
+
+  getMathView(id) {
+    return this.mathViews.get(id) ?? null;
+  }
+
+  clearBoundaryMathCapture() {
+    this.mathSession.clearBoundaryCapture();
   }
 
   unregisterMathView(id, nodeView) {
@@ -3233,6 +1792,7 @@ export class PaperEditorController {
     this.syncUi(tr.docChanged);
     this.notifyPageCount();
     this.emitUiState();
+    this.emitBackslashMenuState();
     this.emitSlashItemState();
     this.updateDebugState("controller.dispatchTransaction");
 
@@ -3401,6 +1961,13 @@ export class PaperEditorController {
     }
 
     if (
+      !event.defaultPrevented &&
+      this.handleBackslashMenuKey(event, "text")
+    ) {
+      return true;
+    }
+
+    if (
       this.hasMathCapture() ||
       event.defaultPrevented ||
       event.isComposing ||
@@ -3464,36 +2031,10 @@ export class PaperEditorController {
   }
 
   getMathTarget() {
-    const targetId = this.activeMathId ?? this.lastFocusedMathId;
-
-    if (!targetId) {
-      return null;
-    }
-
-    const pos = this.findMathPositionById(targetId);
-
-    if (pos == null) {
-      if (this.activeMathId === targetId) {
-        this.activeMathId = null;
-      }
-
-      if (this.lastFocusedMathId === targetId) {
-        this.lastFocusedMathId = null;
-      }
-
-      return null;
-    }
-
-    const node = this.view.state.doc.nodeAt(pos);
-
-    if (!isMathNode(node)) {
-      return null;
-    }
-
-    return { id: targetId, node, pos };
+    return this.mathSession.getMathTarget();
   }
 
-  getMathTargetById(id) {
+  resolveMathTargetById(id) {
     if (!id) {
       return null;
     }
@@ -3513,20 +2054,16 @@ export class PaperEditorController {
     return { id, node, pos };
   }
 
+  getMathTargetById(id) {
+    return this.mathSession.getMathTargetById(id);
+  }
+
   getFocusedOrPendingMathTarget() {
-    const activeTarget = this.getMathTargetById(this.activeMathId);
+    return this.mathSession.getFocusedOrPendingTarget();
+  }
 
-    if (activeTarget) {
-      return activeTarget;
-    }
-
-    const pendingTarget = this.getMathTargetById(this.pendingMathFocusId);
-
-    if (pendingTarget) {
-      return pendingTarget;
-    }
-
-    return null;
+  getBoundaryMathTarget() {
+    return this.mathSession.getBoundaryTarget();
   }
 
   getParagraphCommandRange() {
@@ -3547,33 +2084,15 @@ export class PaperEditorController {
   }
 
   isMathActive() {
-    if (this.activeMathId == null) {
-      return false;
-    }
-
-    if (this.findMathPositionById(this.activeMathId) == null) {
-      this.activeMathId = null;
-      return false;
-    }
-
-    return true;
+    return this.mathSession.isMathActive();
   }
 
   hasPendingMathFocus() {
-    if (this.pendingMathFocusId == null) {
-      return false;
-    }
-
-    if (this.findMathPositionById(this.pendingMathFocusId) == null) {
-      this.pendingMathFocusId = null;
-      return false;
-    }
-
-    return true;
+    return this.mathSession.hasPendingFocus();
   }
 
   hasMathCapture() {
-    return this.isMathActive() || this.hasPendingMathFocus();
+    return this.mathSession.hasCapture();
   }
 
   findMathPositionById(id) {
@@ -3625,91 +2144,19 @@ export class PaperEditorController {
   }
 
   focusMathNode(id, edge) {
-    const nodeView = this.mathViews.get(id);
-
-    if (nodeView) {
-      this.debugLog("controller.focusMathNode", {
-        id,
-        edge,
-        via: "nodeView",
-      });
-      this.scheduleMathFocus(id, edge);
-      return true;
-    }
-
-    this.pendingMathFocusId = id;
-    this.pendingMathFocusEdge = edge;
-    this.debugLog("controller.focusMathNode", {
-      id,
-      edge,
-      via: "pending",
-    });
-    return false;
+    return this.mathSession.focusNode(id, edge);
   }
 
   cancelPendingMathFocus() {
-    this.cancelPendingMathFocusFrame();
-    this.pendingMathFocusId = null;
+    this.mathSession.cancelPendingFocus();
   }
 
   cancelPendingMathFocusFrame() {
-    if (this.pendingMathFocusFrame) {
-      cancelAnimationFrame(this.pendingMathFocusFrame);
-      this.pendingMathFocusFrame = 0;
-    }
+    this.mathSession.cancelPendingFocusFrame();
   }
 
   scheduleMathFocus(id, edge) {
-    this.cancelPendingMathFocusFrame();
-    this.pendingMathFocusId = id;
-    this.pendingMathFocusEdge = edge;
-    this.debugLog("controller.scheduleMathFocus", {
-      id,
-      edge,
-    });
-    this.pendingMathFocusFrame = requestAnimationFrame(() => {
-      this.pendingMathFocusFrame = 0;
-
-      if (this.activeMathId !== id && this.pendingMathFocusId !== id) {
-        this.debugLog("controller.scheduleMathFocus.aborted", {
-          id,
-          edge,
-          activeMathId: this.activeMathId,
-          pendingMathFocusId: this.pendingMathFocusId,
-        });
-        return;
-      }
-
-      const nodeView = this.mathViews.get(id);
-
-      if (!nodeView) {
-        this.pendingMathFocusId = id;
-        this.pendingMathFocusEdge = edge;
-        this.debugLog("controller.scheduleMathFocus.missingNodeView", {
-          id,
-          edge,
-        });
-        return;
-      }
-
-      try {
-        nodeView.focusAtEdge(edge);
-        this.debugLog("controller.scheduleMathFocus.applied", {
-          id,
-          edge,
-          activeElement: describeDomNode(document.activeElement),
-        });
-        this.updateDebugState("controller.scheduleMathFocus.applied");
-      } catch (error) {
-        this.pendingMathFocusId = id;
-        this.pendingMathFocusEdge = edge;
-        this.debugLog("controller.scheduleMathFocus.error", {
-          id,
-          edge,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    });
+    this.mathSession.scheduleFocus(id, edge);
   }
 
   buildInlineMathInsertionTransaction(state, from, to, initialLatex = "") {
@@ -3766,22 +2213,31 @@ export class PaperEditorController {
       : null;
     const afterParagraph = createParagraphNode(afterContent);
     const textToolbarState = createToolbarStateFromState(state);
-    const node = editorSchema.nodes.block_math.create(
-      this.createMathNodeAttrsForState(state, initialLatex)
+    const gatherBlock = createDefaultGatherBlock(
+      editorSchema,
+      1,
+      1,
+      (_rowIndex, _cellIndex) => this.createMathNodeAttrsForState(state, initialLatex)
     );
+    const firstMathNode = gatherBlock.firstChild?.firstChild;
     const replacementNodes = beforeParagraph
-      ? [beforeParagraph, node, afterParagraph]
-      : [node, afterParagraph];
+      ? [beforeParagraph, gatherBlock, afterParagraph]
+      : [gatherBlock, afterParagraph];
     const replacement = Fragment.fromArray(replacementNodes);
     const mathPos = beforeParagraph
-      ? paragraphPos + beforeParagraph.nodeSize
-      : paragraphPos;
+      ? findGatherMathPos(gatherBlock, paragraphPos + beforeParagraph.nodeSize, 0, 0)
+      : findGatherMathPos(gatherBlock, paragraphPos, 0, 0);
+    const mathId = firstMathNode?.attrs?.id ?? null;
 
-    this.prepareMathInsertion(node.attrs.id, textToolbarState);
+    if (!mathId || mathPos == null) {
+      return null;
+    }
+
+    this.prepareMathInsertion(mathId, textToolbarState);
     this.debugLog("controller.buildDisplayMathInsertionTransaction", {
       paragraphPos,
       cursorOffset,
-      nodeId: node.attrs.id,
+      nodeId: mathId,
       initialLatex,
       isLeadingListParagraph,
       textToolbarState,
@@ -3795,12 +2251,15 @@ export class PaperEditorController {
       paragraphPos + paragraph.nodeSize,
       replacement
     );
-    tr.setSelection(TextSelection.near(tr.doc.resolve(mathPos + node.nodeSize), -1));
+    tr.setSelection(
+      TextSelection.near(tr.doc.resolve(mathPos + (firstMathNode?.nodeSize ?? 1)), -1)
+    );
     return tr;
   }
 
   prepareMathInsertion(nodeId, textToolbarState, edge = "start") {
     this.cancelPendingMathFocus();
+    this.clearBoundaryMathCapture();
     this.pendingMathFocusId = nodeId;
     this.pendingMathFocusEdge = edge;
     this.lastFocusedMathId = nodeId;
@@ -4077,10 +2536,16 @@ export class PaperEditorController {
     });
   }
 
+  emitBackslashMenuState() {
+    this.onBackslashMenuStateChange?.(this.getActiveBackslashMenuState());
+  }
+
   emitSlashItemState() {
     this.onSlashItemStateChange?.(this.getActiveSlashItemState());
   }
 }
+
+Object.assign(PaperEditorController.prototype, widgetActionMethods);
 
 export function createPaperEditorController(options) {
   return new PaperEditorController(options);

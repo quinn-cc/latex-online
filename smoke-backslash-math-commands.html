@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Backslash Math Commands Smoke</title>
+  </head>
+  <body data-result="pending">
+    <script type="module">
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      async function withController(run) {
+        const iframe = document.createElement("iframe");
+        iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
+        iframe.style.width = "1280px";
+        iframe.style.height = "900px";
+        document.body.append(iframe);
+
+        await waitFor(
+          () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+        );
+
+        return run(iframe.contentWindow.__latexOnlineDebug.controller);
+      }
+
+      async function testInlineCommand() {
+        return withController(async (controller) => {
+          controller.dispatchTransaction(
+            controller.view.state.tr.insertText("\\inline")
+          );
+
+          if (!controller.executeBackslashCommandAtSelection()) {
+            throw new Error("Expected \\inline command to execute");
+          }
+
+          await waitFor(() => controller.getFocusedOrPendingMathTarget());
+
+          const firstBlock = controller.view.state.doc.firstChild.firstChild;
+
+          if (firstBlock?.type?.name !== "paragraph") {
+            throw new Error("Expected paragraph after \\inline");
+          }
+
+          if (!firstBlock.content.content.some((node) => node.type?.name === "inline_math")) {
+            throw new Error("Expected inline_math node after \\inline");
+          }
+
+          return controller.view.state.doc.toJSON();
+        });
+      }
+
+      async function testDisplayCommand() {
+        return withController(async (controller) => {
+          controller.dispatchTransaction(
+            controller.view.state.tr.insertText("\\display")
+          );
+
+          if (!controller.executeBackslashCommandAtSelection()) {
+            throw new Error("Expected \\display command to execute");
+          }
+
+          await waitFor(() => controller.getFocusedOrPendingMathTarget());
+
+          const page = controller.view.state.doc.firstChild;
+          const firstBlock = page.firstChild;
+          const secondBlock = page.child(1);
+
+          if (firstBlock?.type?.name !== "gather_block") {
+            throw new Error("Expected gather_block node after \\display");
+          }
+
+          if (secondBlock?.type?.name !== "paragraph") {
+            throw new Error("Expected trailing paragraph after \\display");
+          }
+
+          return controller.view.state.doc.toJSON();
+        });
+      }
+
+      try {
+        const inlineDoc = await testInlineCommand();
+        const displayDoc = await testDisplayCommand();
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.inline = JSON.stringify(inlineDoc);
+        document.body.dataset.display = JSON.stringify(displayDoc);
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

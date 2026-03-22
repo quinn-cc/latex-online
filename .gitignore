@@ -1,2 +1,5 @@
 node_modules/
 mathlive-0.109.0.tgz
+__pycache__/
+data/
+.venv/

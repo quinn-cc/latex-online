@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Grid Tab Flow Smoke</title>
+  </head>
+  <body data-result="pending">
+    <script type="module">
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      async function withController(run) {
+        const iframe = document.createElement("iframe");
+        iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
+        iframe.style.width = "1280px";
+        iframe.style.height = "900px";
+        document.body.append(iframe);
+
+        await waitFor(
+          () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+        );
+
+        return run(iframe.contentWindow.__latexOnlineDebug.controller);
+      }
+
+      async function dispatchTab(controller, isShift = false) {
+        const target = controller.getFocusedOrPendingMathTarget();
+        const mathView = target ? controller.getMathView(target.id) : null;
+
+        if (!mathView) {
+          return false;
+        }
+
+        mathView.mathField.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Tab",
+            shiftKey: isShift,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return true;
+      }
+
+      async function dispatchImmediateTab(controller, isShift = false) {
+        const activeElement =
+          controller.view.dom.ownerDocument.activeElement ?? controller.view.dom;
+
+        activeElement.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Tab",
+            shiftKey: isShift,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      }
+
+      async function waitForMathView(controller) {
+        const target = await waitFor(() => controller.getFocusedOrPendingMathTarget());
+        const mathView = await waitFor(() => controller.getMathView(target.id));
+        return { target, mathView };
+      }
+
+      function getActiveTargetSnapshot(controller) {
+        const target = controller.getFocusedOrPendingMathTarget();
+        return target
+          ? {
+              id: target.id,
+              pos: target.pos,
+              type: target.node.type.name,
+            }
+          : null;
+      }
+
+      async function runCommandScenario(commandName, expectedSteps) {
+        return withController(async (controller) => {
+          controller.dispatchTransaction(
+            controller.view.state.tr.insertText(`\\${commandName}`)
+          );
+
+          if (!controller.executeBackslashCommandAtSelection()) {
+            throw new Error(`Expected \\\\${commandName} command to execute`);
+          }
+
+          const mathTarget = await waitFor(() => controller.getFocusedOrPendingMathTarget());
+          const mathView = controller.getMathView(mathTarget.id);
+
+          if (!mathView) {
+            throw new Error(`Expected ${commandName} math view`);
+          }
+
+          const steps = [getActiveTargetSnapshot(controller)];
+
+          for (let index = 0; index < expectedSteps - 1; index += 1) {
+            await dispatchTab(controller);
+            steps.push(getActiveTargetSnapshot(controller));
+          }
+
+          return {
+            steps,
+            isMathActive: controller.isMathActive(),
+            selection: {
+              from: controller.view.state.selection.from,
+              to: controller.view.state.selection.to,
+              parentType: controller.view.state.selection.$from.parent.type.name,
+            },
+            doc: controller.view.state.doc.toJSON(),
+          };
+        });
+      }
+
+      async function runImmediateAlignScenario() {
+        return withController(async (controller) => {
+          controller.view.focus();
+          controller.dispatchTransaction(
+            controller.view.state.tr.insertText("\\align")
+          );
+
+          if (!controller.executeBackslashCommandAtSelection()) {
+            throw new Error("Expected \\\\align command to execute");
+          }
+
+          const initialTarget = controller.getFocusedOrPendingMathTarget();
+
+          if (!initialTarget || initialTarget.node.type.name !== "align_math") {
+            throw new Error(`Expected pending align target, got ${JSON.stringify(initialTarget)}`);
+          }
+
+          await dispatchImmediateTab(controller);
+
+          const nextTarget = controller.getFocusedOrPendingMathTarget();
+
+          return {
+            before: {
+              activeElement: controller.view.dom.ownerDocument.activeElement?.tagName ?? null,
+              target: {
+                id: initialTarget.id,
+                pos: initialTarget.pos,
+                type: initialTarget.node.type.name,
+              },
+            },
+            after: nextTarget
+              ? {
+                  id: nextTarget.id,
+                  pos: nextTarget.pos,
+                  type: nextTarget.node.type.name,
+                }
+              : null,
+            isMathActive: controller.isMathActive(),
+            selection: {
+              from: controller.view.state.selection.from,
+              to: controller.view.state.selection.to,
+              parentType: controller.view.state.selection.$from.parent.type.name,
+            },
+            doc: controller.view.state.doc.toJSON(),
+          };
+        });
+      }
+
+      async function runImmediateAlignFilledScenario() {
+        return withController(async (controller) => {
+          controller.view.focus();
+          controller.dispatchTransaction(
+            controller.view.state.tr.insertText("\\align")
+          );
+
+          if (!controller.executeBackslashCommandAtSelection()) {
+            throw new Error("Expected \\\\align command to execute");
+          }
+
+          const { target, mathView } = await waitForMathView(controller);
+          mathView.focusAtEdge("start");
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          mathView.mathField.setValue("x", { format: "latex" });
+          mathView.mathField.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise((resolve) => setTimeout(resolve, 60));
+
+          const before = {
+            activeElement: controller.view.dom.ownerDocument.activeElement?.tagName ?? null,
+            isMathActive: controller.isMathActive(),
+            pendingMathTarget: controller.getFocusedOrPendingMathTarget()
+              ? {
+                  id: controller.getFocusedOrPendingMathTarget().id,
+                  pos: controller.getFocusedOrPendingMathTarget().pos,
+                  type: controller.getFocusedOrPendingMathTarget().node.type.name,
+                }
+              : null,
+            activeMathId: controller.activeMathId ?? null,
+            pendingMathFocusId: controller.pendingMathFocusId ?? null,
+          };
+
+          await dispatchImmediateTab(controller);
+
+          const nextTarget = controller.getFocusedOrPendingMathTarget();
+
+          return {
+            before,
+            after: nextTarget
+              ? {
+                  id: nextTarget.id,
+                  pos: nextTarget.pos,
+                  type: nextTarget.node.type.name,
+                }
+              : null,
+            isMathActive: controller.isMathActive(),
+            selection: {
+              from: controller.view.state.selection.from,
+              to: controller.view.state.selection.to,
+              parentType: controller.view.state.selection.$from.parent.type.name,
+            },
+            doc: controller.view.state.doc.toJSON(),
+          };
+        });
+      }
+
+      async function runBoundaryBlurAlignScenario() {
+        return withController(async (controller) => {
+          controller.view.focus();
+          controller.dispatchTransaction(
+            controller.view.state.tr.insertText("\\align")
+          );
+
+          if (!controller.executeBackslashCommandAtSelection()) {
+            throw new Error("Expected \\\\align command to execute");
+          }
+
+          const { mathView } = await waitForMathView(controller);
+          mathView.focusAtEdge("start");
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          mathView.mathField.setValue("x", { format: "latex" });
+          mathView.mathField.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise((resolve) => setTimeout(resolve, 60));
+
+          mathView.handleMoveOut(
+            new CustomEvent("move-out", {
+              detail: { direction: "forward" },
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+          mathView.handleBlur();
+          await new Promise((resolve) => setTimeout(resolve, 80));
+
+          const before = {
+            activeElement: controller.view.dom.ownerDocument.activeElement?.tagName ?? null,
+            isMathActive: controller.isMathActive(),
+            boundaryMathTarget: controller.getBoundaryMathTarget()
+              ? {
+                  id: controller.getBoundaryMathTarget().id,
+                  pos: controller.getBoundaryMathTarget().pos,
+                  type: controller.getBoundaryMathTarget().node.type.name,
+                }
+              : null,
+          };
+
+          await dispatchImmediateTab(controller);
+
+          const nextTarget = controller.getFocusedOrPendingMathTarget()
+            ?? controller.getBoundaryMathTarget();
+
+          return {
+            before,
+            after: nextTarget
+              ? {
+                  id: nextTarget.id,
+                  pos: nextTarget.pos,
+                  type: nextTarget.node.type.name,
+                }
+              : null,
+            isMathActive: controller.isMathActive(),
+            selection: {
+              from: controller.view.state.selection.from,
+              to: controller.view.state.selection.to,
+              parentType: controller.view.state.selection.$from.parent.type.name,
+            },
+            doc: controller.view.state.doc.toJSON(),
+          };
+        });
+      }
+
+      try {
+        const gather = await runCommandScenario("gather", 2);
+        const align = await runCommandScenario("align", 3);
+        const immediateAlign = await runImmediateAlignScenario();
+        const immediateAlignFilled = await runImmediateAlignFilledScenario();
+        const boundaryBlurAlign = await runBoundaryBlurAlignScenario();
+
+        if (!immediateAlign.after || immediateAlign.after.type !== "align_math") {
+          throw new Error(`Immediate align tab lost widget: ${JSON.stringify(immediateAlign)}`);
+        }
+
+        if (!immediateAlignFilled.after || immediateAlignFilled.after.type !== "align_math") {
+          throw new Error(
+            `Immediate filled align tab lost widget: ${JSON.stringify(immediateAlignFilled)}`
+          );
+        }
+
+        if (!boundaryBlurAlign.after || boundaryBlurAlign.after.type !== "align_math") {
+          throw new Error(
+            `Boundary blur align tab lost widget: ${JSON.stringify(boundaryBlurAlign)}`
+          );
+        }
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.gather = JSON.stringify(gather);
+        document.body.dataset.align = JSON.stringify(align);
+        document.body.dataset.immediateAlign = JSON.stringify(immediateAlign);
+        document.body.dataset.immediateAlignFilled = JSON.stringify(immediateAlignFilled);
+        document.body.dataset.boundaryBlurAlign = JSON.stringify(boundaryBlurAlign);
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

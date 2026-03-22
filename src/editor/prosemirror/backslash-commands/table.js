@@ -1,5 +1,3 @@
-import { Fragment } from "prosemirror-model";
-import { TextSelection } from "prosemirror-state";
 import {
   createGridRowsWithInsertedRow,
   createGridRowsWithoutRow,
@@ -8,6 +6,7 @@ import {
   normalizePositiveInt,
   resolveNodeAttrs,
 } from "../grid-utils.js";
+import { createFullLineWidgetCommand } from "./block-widgets.js";
 
 export function createTableParagraphAttrs(paragraphAttrs = {}) {
   return {
@@ -18,10 +17,6 @@ export function createTableParagraphAttrs(paragraphAttrs = {}) {
 
 function createParagraphNode(schema, attrs) {
   return schema.nodes.paragraph.createAndFill(createTableParagraphAttrs(attrs));
-}
-
-function createPlainParagraphNode(schema, attrs) {
-  return schema.nodes.paragraph.createAndFill({ ...attrs });
 }
 
 export function createTableCellNode(schema, paragraphAttrs) {
@@ -119,39 +114,23 @@ export function findTableCellTextPos(tableNode, tablePos, rowIndex, cellIndex) {
 }
 
 export function createTableCommand(schema) {
-  return {
+  return createFullLineWidgetCommand({
+    schema,
     name: "table",
     title: "Table",
     description: "Insert a 2x2 table",
-    execute({ state, match }) {
+    allowedParentTypes: [
+      schema.nodes.page,
+      schema.nodes.table_cell,
+    ],
+    createBlockNode: ({ match }) => {
       const paragraphNode = match.paragraphNode;
-      const parentNode = match.parentNode;
-
-      if (!paragraphNode || !parentNode) {
-        return null;
-      }
-
-      // First pass: keep table insertion in plain block flow.
-      if (
-        parentNode.type !== schema.nodes.page &&
-        parentNode.type !== schema.nodes.table_cell
-      ) {
-        return null;
-      }
-
       const tableNode = createDefaultTableNode(schema, 2, 2, paragraphNode.attrs);
-      const trailingParagraph = createPlainParagraphNode(schema, paragraphNode.attrs);
-      const replacement = Fragment.fromArray([tableNode, trailingParagraph]);
-      const tablePos = match.paragraphPos;
-      const tr = state.tr.replaceWith(
-        match.paragraphPos,
-        match.paragraphPos + paragraphNode.nodeSize,
-        replacement
-      );
-      const selectionPos = findTableCellTextPos(tableNode, tablePos, 0, 0);
-
-      tr.setSelection(TextSelection.near(tr.doc.resolve(selectionPos), 1));
-      return tr;
+      return tableNode;
     },
-  };
+    getSelectionTarget: ({ blockNode, blockPos }) => ({
+      selectionPos: findTableCellTextPos(blockNode, blockPos, 0, 0),
+      selectionBias: 1,
+    }),
+  });
 }

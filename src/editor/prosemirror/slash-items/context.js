@@ -3,6 +3,10 @@ import { normalizeAlignGroupCount } from "../backslash-commands/align.js";
 import { normalizeGatherColumnCount } from "../backslash-commands/gather.js";
 import { editorSchema } from "../schema.js";
 import { normalizeTableStyle } from "../table-styles.js";
+import {
+  getWidgetTypeFromNode,
+  isFullLineWidgetNode as isRegisteredFullLineWidgetNode,
+} from "../widget-registry.js";
 
 function findAncestorNodeInfo($pos, targetType) {
   for (let depth = $pos.depth; depth > 0; depth -= 1) {
@@ -157,23 +161,11 @@ export function getGatherContextAtPos(doc, gatherMathPos) {
 }
 
 export function getSlashWidgetTypeFromNode(node) {
-  if (!node) {
-    return null;
-  }
+  return getWidgetTypeFromNode(node);
+}
 
-  if (node.type === editorSchema.nodes.table) {
-    return "table";
-  }
-
-  if (node.type === editorSchema.nodes.align_block) {
-    return "align";
-  }
-
-  if (node.type === editorSchema.nodes.gather_block) {
-    return "gather";
-  }
-
-  return null;
+export function isFullLineWidgetNode(node) {
+  return isRegisteredFullLineWidgetNode(node);
 }
 
 export function getActiveTableItem(state) {

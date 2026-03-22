@@ -41,11 +41,20 @@
           <details class="file-menu" id="file-menu">
             <summary class="secondary-button file-menu-trigger">File</summary>
             <div class="file-menu-panel" role="menu" aria-label="File actions">
-              <button id="file-save" class="file-menu-item" type="button" role="menuitem">
-                Save .tex
+              <button id="file-new-document" class="file-menu-item" type="button" role="menuitem">
+                New document
               </button>
-              <button class="file-menu-item" type="button" role="menuitem" disabled>
-                Open
+              <button id="file-open-document" class="file-menu-item" type="button" role="menuitem">
+                Open cloud document…
+              </button>
+              <button id="file-save-document" class="file-menu-item" type="button" role="menuitem">
+                Save to cloud
+              </button>
+              <button id="file-save" class="file-menu-item" type="button" role="menuitem">
+                Download .tex
+              </button>
+              <button id="file-account" class="file-menu-item" type="button" role="menuitem">
+                Account…
               </button>
               <button class="file-menu-item" type="button" role="menuitem" disabled>
                 Export PDF
@@ -243,6 +252,77 @@
       </header>
 
       <main class="workspace">
+        <aside id="document-home" class="document-sidebar" aria-label="Document sidebar">
+          <div class="document-sidebar-head">
+            <div>
+              <p class="page-settings-kicker">Cloud</p>
+              <h2 id="document-home-title">Documents</h2>
+            </div>
+            <div class="document-sidebar-tools">
+              <button
+                id="document-home-account-button"
+                class="secondary-button document-sidebar-icon"
+                type="button"
+                title="Account"
+                aria-label="Account"
+              >
+                Account
+              </button>
+              <button
+                id="document-home-refresh"
+                class="secondary-button document-sidebar-icon"
+                type="button"
+                title="Refresh documents"
+                aria-label="Refresh documents"
+              >
+                ↻
+              </button>
+              <button
+                id="document-home-create-document"
+                class="secondary-button document-sidebar-add"
+                type="button"
+                title="Create document"
+                aria-label="Create document"
+              >
+                +
+              </button>
+            </div>
+          </div>
+          <p id="document-home-status" class="document-home-status">
+            Sign in or create an account to open your saved documents.
+          </p>
+          <section
+            class="document-sidebar-files"
+            aria-labelledby="document-home-documents-title"
+          >
+            <div class="document-sidebar-files-head">
+              <h3 id="document-home-documents-title">Files</h3>
+            </div>
+            <p id="document-home-documents-status" class="document-dialog-status">
+              Sign in to see your cloud documents.
+            </p>
+            <label
+              class="page-settings-field document-new-field document-sidebar-new-field"
+              for="document-home-new-document-title"
+            >
+              <span class="page-settings-label">New document title</span>
+              <input
+                id="document-home-new-document-title"
+                class="page-settings-input"
+                type="text"
+                maxlength="120"
+                placeholder="Untitled document"
+                autocomplete="off"
+              />
+            </label>
+            <div
+              id="document-home-document-list"
+              class="document-list document-sidebar-list"
+              role="list"
+              aria-label="Saved cloud documents"
+            ></div>
+          </section>
+        </aside>
         <section
           class="paper-column"
           id="paper-column"
@@ -377,8 +457,120 @@
       </form>
     </dialog>
 
+    <dialog
+      id="account-dialog"
+      class="document-dialog"
+      aria-labelledby="account-title"
+    >
+      <form id="account-form" method="dialog" class="document-dialog-form">
+        <div class="document-dialog-head">
+          <div>
+            <p class="page-settings-kicker">Cloud</p>
+            <h2 id="account-title">Account</h2>
+          </div>
+          <button
+            id="account-close"
+            class="secondary-button page-settings-close"
+            type="button"
+            aria-label="Close account dialog"
+          >
+            Close
+          </button>
+        </div>
+        <div class="document-dialog-grid">
+          <label class="page-settings-field" for="account-username">
+            <span class="page-settings-label">Username</span>
+            <input
+              id="account-username"
+              class="page-settings-input"
+              type="text"
+              placeholder="Your username"
+              autocomplete="username"
+              spellcheck="false"
+            />
+          </label>
+          <label class="page-settings-field" for="account-password">
+            <span class="page-settings-label">Password</span>
+            <input
+              id="account-password"
+              class="page-settings-input"
+              type="password"
+              placeholder="Your password"
+              autocomplete="current-password"
+              spellcheck="false"
+            />
+          </label>
+        </div>
+        <p id="account-status" class="document-dialog-status">
+          Sign in or create an account to access cloud documents.
+        </p>
+        <div class="document-dialog-actions">
+          <button id="account-sign-in" type="submit">Sign in</button>
+          <button id="account-register" class="secondary-button" type="button">
+            Create account
+          </button>
+          <button id="account-sign-out" class="secondary-button" type="button">
+            Sign out
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog
+      id="documents-dialog"
+      class="document-dialog"
+      aria-labelledby="documents-title"
+    >
+      <form id="documents-form" method="dialog" class="document-dialog-form">
+        <div class="document-dialog-head">
+          <div>
+            <p class="page-settings-kicker">Cloud</p>
+            <h2 id="documents-title">Documents</h2>
+          </div>
+          <button
+            id="documents-close"
+            class="secondary-button page-settings-close"
+            type="button"
+            aria-label="Close documents dialog"
+          >
+            Close
+          </button>
+        </div>
+        <p id="documents-status" class="document-dialog-status">
+          Create a document or open an existing one.
+        </p>
+        <div class="document-new-row">
+          <label class="page-settings-field document-new-field" for="new-document-title">
+            <span class="page-settings-label">New document title</span>
+            <input
+              id="new-document-title"
+              class="page-settings-input"
+              type="text"
+              maxlength="120"
+              placeholder="Untitled document"
+              autocomplete="off"
+            />
+          </label>
+          <button id="create-document" type="button">Create</button>
+        </div>
+        <div
+          id="document-list"
+          class="document-list"
+          role="list"
+          aria-label="Saved documents"
+        ></div>
+        <div class="document-dialog-actions">
+          <button id="documents-refresh" class="secondary-button" type="button">
+            Refresh
+          </button>
+        </div>
+      </form>
+    </dialog>
+
     <aside class="utility-dock" aria-label="Document controls">
       <p id="save-status">Last saved: not yet</p>
+      <p id="document-status">Document: local draft</p>
+      <p id="cloud-status">Cloud: not connected</p>
       <div class="utility-actions">
         <div class="zoom-panel" role="group" aria-label="Page zoom">
           <button
@@ -414,6 +606,18 @@
         </button>
       </div>
     </aside>
+
+    <div id="backslash-menu" class="backslash-menu" hidden>
+      <div class="backslash-menu-head">
+        <span id="backslash-menu-query" class="backslash-menu-query">\</span>
+      </div>
+      <div
+        id="backslash-menu-list"
+        class="backslash-menu-list"
+        role="listbox"
+        aria-label="Backslash commands"
+      ></div>
+    </div>
 
     <div id="slash-item-settings" class="slash-item-settings" hidden>
       <button

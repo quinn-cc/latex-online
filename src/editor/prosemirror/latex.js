@@ -32,7 +32,6 @@ const DOCUMENT_HEADER = String.raw`% Latex Online format ${LATEX_FORMAT_VERSION}
 \newcommand{\LOpageSettings}[9]{}
 \newcommand{\LOsegment}[6]{#6}
 \newcommand{\LOinlineMath}[4]{$#1$}
-\newcommand{\LOdisplayMath}[4]{\[#1\]}
 \newcommand{\LOparagraph}[4]{#4\par\vspace{#3em}}
 \newcommand{\LOlist}[2]{#2}
 \newcommand{\LOitem}[1]{#1}
@@ -246,10 +245,6 @@ function serializeList(node) {
     "}";
 }
 
-function serializeDisplayMath(node) {
-  return String.raw`\LOdisplayMath{${escapeMathArg(node.attrs.latex)}}{${normalizeMathFontFamily(node.attrs.fontFamily)}}{${normalizeMathFontSize(node.attrs.fontSize)}}{${normalizeTextFontSize(node.attrs.baseTextFontSize)}}`;
-}
-
 function serializeAlignCell(node) {
   return String.raw`\LOalignCell{${escapeMathArg(node.attrs.latex)}}{${normalizeMathFontFamily(node.attrs.fontFamily)}}{${normalizeMathFontSize(node.attrs.fontSize)}}{${normalizeTextFontSize(node.attrs.baseTextFontSize)}}`;
 }
@@ -385,10 +380,6 @@ function serializeTable(node) {
 function serializeBlockNode(node) {
   if (node.type === editorSchema.nodes.paragraph) {
     return serializeParagraph(node);
-  }
-
-  if (node.type === editorSchema.nodes.block_math) {
-    return serializeDisplayMath(node);
   }
 
   if (node.type === editorSchema.nodes.align_block) {
@@ -686,33 +677,6 @@ function parseBlockSequence(source) {
           },
           parseParagraphBody(body)
         )
-      );
-      continue;
-    }
-
-    if (cursor.consumeCommand("LOdisplayMath")) {
-      const latex = cursor.readArgument();
-      const fontFamily = cursor.readArgument();
-      const fontSize = cursor.readArgument();
-      const baseTextFontSize = cursor.readArgument();
-
-      if (
-        latex == null ||
-        fontFamily == null ||
-        fontSize == null ||
-        baseTextFontSize == null
-      ) {
-        break;
-      }
-
-      blocks.push(
-        editorSchema.nodes.block_math.create({
-          id: createParsedMathId("math"),
-          latex: decodeMathArg(latex),
-          fontFamily: normalizeMathFontFamily(fontFamily),
-          fontSize: normalizeMathFontSize(fontSize),
-          baseTextFontSize: normalizeTextFontSize(baseTextFontSize),
-        })
       );
       continue;
     }

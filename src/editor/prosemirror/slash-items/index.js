@@ -1,4 +1,8 @@
 import { normalizeTableStyle, TABLE_STYLE_OPTIONS } from "../table-styles.js";
+import {
+  getMathArrayStructureDefinitions,
+  normalizeMathArraySettings,
+} from "../math-extensions/array-structures.js";
 import { editorSchema } from "../schema.js";
 import {
   getActiveAlignItem,
@@ -6,12 +10,29 @@ import {
   getActiveTableItem,
   getAlignContextAtPos,
   getGatherContextAtPos,
+  isFullLineWidgetNode,
   getSlashWidgetTypeFromNode,
   getTableAnchorIndices,
   getTableContext,
 } from "./context.js";
 
+const mathArraySlashItemDefinitions = getMathArrayStructureDefinitions().map((definition) => [
+  definition.type,
+  {
+    type: definition.type,
+    title: definition.title,
+    fields: definition.settingsFields,
+    update(controller, item, settings) {
+      return controller.updateMathArraySettings(
+        item,
+        normalizeMathArraySettings(definition.type, settings, item?.settings)
+      );
+    },
+  },
+]);
+
 const slashItemDefinitions = new Map([
+  ...mathArraySlashItemDefinitions,
   [
     "table",
     {
@@ -109,6 +130,12 @@ export function getSlashItemDefinition(type) {
 
 export function getActiveSlashItemState(controller) {
   const mathTarget = controller.getFocusedOrPendingMathTarget();
+  const activeMathView = mathTarget ? controller.getMathView(mathTarget.id) : null;
+  const activeMathStructureItem = activeMathView?.getActiveSettingsItemState?.() ?? null;
+
+  if (activeMathStructureItem) {
+    return activeMathStructureItem;
+  }
 
   if (mathTarget?.node?.type === editorSchema.nodes.align_math) {
     return getActiveAlignItem(controller.view.state, mathTarget.pos);
@@ -140,6 +167,7 @@ export function deleteSlashItem(controller, item) {
 export {
   getAlignContextAtPos,
   getGatherContextAtPos,
+  isFullLineWidgetNode,
   getSlashWidgetTypeFromNode,
   getTableAnchorIndices,
   getTableContext,

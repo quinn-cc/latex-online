@@ -340,38 +340,6 @@ const baseNodes = {
       return ["span", getMathDomAttrs(node, "inline")];
     },
   },
-  block_math: {
-    group: "block",
-    atom: true,
-    selectable: true,
-    marks: "",
-    attrs: createMathNodeAttrs(),
-    parseDOM: [
-      {
-        tag: "div[data-block-math]",
-        getAttrs(dom) {
-          const element = dom instanceof HTMLElement ? dom : null;
-
-          return {
-            id: element?.getAttribute("data-math-id") ?? "",
-            latex: element?.getAttribute("data-latex") ?? "",
-            fontFamily: normalizeMathFontFamily(
-              element?.getAttribute("data-math-font-family")
-            ),
-            fontSize: normalizeMathFontSize(
-              element?.getAttribute("data-math-font-size")
-            ),
-            baseTextFontSize: normalizeTextFontSize(
-              element?.getAttribute("data-base-text-font-size")
-            ),
-          };
-        },
-      },
-    ],
-    toDOM(node) {
-      return ["div", getMathDomAttrs(node, "display")];
-    },
-  },
   align_block: {
     group: "block",
     content: "align_row+",

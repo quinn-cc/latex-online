@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Math Widget Backspace Smoke</title>
+  </head>
+  <body data-result="pending">
+    <script type="module">
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      async function withController(run) {
+        const iframe = document.createElement("iframe");
+        iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
+        iframe.style.width = "1280px";
+        iframe.style.height = "900px";
+        document.body.append(iframe);
+
+        await waitFor(
+          () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+        );
+
+        return run(iframe.contentWindow.__latexOnlineDebug.controller);
+      }
+
+      async function testDisplayBackspace() {
+        return withController(async (controller) => {
+          const tr = controller.buildDisplayMathInsertionTransaction(
+            controller.view.state,
+            ""
+          );
+
+          if (!tr) {
+            throw new Error("Expected display math insertion transaction");
+          }
+
+          controller.dispatchTransaction(tr);
+
+          const mathTarget = await waitFor(() =>
+            controller.getFocusedOrPendingMathTarget()
+          );
+          const mathView = controller.getMathView(mathTarget.id);
+
+          if (!mathView) {
+            throw new Error("Expected display math node view");
+          }
+
+          mathView.mathField.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "Backspace",
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+
+          await waitFor(() => {
+            const firstBlock = controller.view.state.doc.firstChild.firstChild;
+            return (
+              firstBlock?.type?.name === "paragraph" &&
+              controller.view.state.doc.firstChild.childCount === 1
+            );
+          });
+
+          return controller.view.state.doc.toJSON();
+        });
+      }
+
+      async function testInlineBackspace() {
+        return withController(async (controller) => {
+          const selection = controller.view.state.selection;
+          const tr = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            selection.from,
+            selection.to,
+            ""
+          );
+
+          controller.dispatchTransaction(tr);
+
+          const mathTarget = await waitFor(() =>
+            controller.getFocusedOrPendingMathTarget()
+          );
+          const mathView = controller.getMathView(mathTarget.id);
+
+          if (!mathView) {
+            throw new Error("Expected inline math node view");
+          }
+
+          mathView.mathField.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "Backspace",
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+
+          await waitFor(() => {
+            const firstBlock = controller.view.state.doc.firstChild.firstChild;
+            return (
+              firstBlock?.type?.name === "paragraph" &&
+              !firstBlock.content.content.some((node) => node.type?.name === "inline_math")
+            );
+          });
+
+          return controller.view.state.doc.toJSON();
+        });
+      }
+
+      try {
+        const displayDoc = await testDisplayBackspace();
+        const inlineDoc = await testInlineBackspace();
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.display = JSON.stringify(displayDoc);
+        document.body.dataset.inline = JSON.stringify(inlineDoc);
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

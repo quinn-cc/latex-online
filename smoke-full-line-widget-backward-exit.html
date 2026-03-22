@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Full Line Widget Backward Exit Smoke</title>
+  </head>
+  <body data-result="pending">
+    <script type="module">
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      async function withController(run) {
+        const iframe = document.createElement("iframe");
+        iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
+        iframe.style.width = "1280px";
+        iframe.style.height = "900px";
+        document.body.append(iframe);
+
+        await waitFor(
+          () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+        );
+
+        const controller = iframe.contentWindow.__latexOnlineDebug.controller;
+        controller.clear();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return run(controller);
+      }
+
+      function insertCommand(controller, commandName, prefixText = "Intro ") {
+        controller.view.focus();
+        controller.dispatchTransaction(
+          controller.view.state.tr.insertText(`${prefixText}\\${commandName}`)
+        );
+        const state = controller.view.state;
+        const { $from } = state.selection;
+        const paragraphNode = $from.parent;
+        const fullText = paragraphNode.textContent;
+        const command = controller.backslashCommands.commandsByName.get(commandName);
+        const result = command?.execute({
+          state,
+          controller,
+          match: {
+            nameQuery: commandName,
+            commandStart: fullText.lastIndexOf(`\\${commandName}`),
+            fullText,
+            beforeText: fullText.slice(0, $from.parentOffset),
+            afterText: fullText.slice($from.parentOffset),
+            paragraphNode,
+            paragraphPos: $from.before(),
+            parentNode: $from.node($from.depth - 1),
+            parentIndex: $from.index($from.depth - 1),
+          },
+        });
+        const tr = result?.tr ?? result;
+
+        if (!tr) {
+          throw new Error(`Expected \\\\${commandName} command to build a transaction`);
+        }
+
+        if (result?.focusMathId) {
+          controller.prepareMathInsertion(
+            result.focusMathId,
+            controller.getCurrentTextToolbarState(),
+            result.focusMathEdge ?? "start"
+          );
+        }
+
+        controller.dispatchTransaction(tr);
+
+        if (result?.focusMathId) {
+          controller.focusMathNode(result.focusMathId, result.focusMathEdge ?? "start");
+        }
+      }
+
+      function getTopLevelBlocks(controller) {
+        const page = controller.view.state.doc.firstChild;
+        return page ? Array.from({ length: page.childCount }, (_, index) => page.child(index)) : [];
+      }
+
+      function assertIntroParagraphBeforeWidget(controller, expectedWidgetType) {
+        const blocks = getTopLevelBlocks(controller);
+
+        if (blocks.length < 3) {
+          throw new Error(`Expected intro/widget/trailing blocks, got ${blocks.length}`);
+        }
+
+        if (blocks[0].type.name !== "paragraph" || blocks[0].textContent !== "Intro ") {
+          throw new Error(`Expected intro paragraph before widget, got ${blocks[0].type.name}`);
+        }
+
+        if (blocks[1].type.name !== expectedWidgetType) {
+          throw new Error(`Expected ${expectedWidgetType}, got ${blocks[1].type.name}`);
+        }
+
+        if (controller.view.state.selection.$from.parent.type.name !== "paragraph") {
+          throw new Error(
+            `Expected paragraph selection before widget, got ${controller.view.state.selection.$from.parent.type.name}`
+          );
+        }
+      }
+
+      async function dispatchMathKey(controller, key, { shiftKey = false } = {}) {
+        const target = await waitFor(() => controller.getFocusedOrPendingMathTarget());
+        const mathView = await waitFor(() => controller.getMathView(target.id));
+        mathView.focusAtEdge("start");
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        mathView.mathField.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key,
+            shiftKey,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
+
+      async function runMathScenario(commandName, key, eventOptions = {}) {
+        return withController(async (controller) => {
+          insertCommand(controller, commandName);
+          await dispatchMathKey(controller, key, eventOptions);
+          assertIntroParagraphBeforeWidget(
+            controller,
+            commandName === "align" ? "align_block" : "gather_block"
+          );
+          return {
+            selection: {
+              from: controller.view.state.selection.from,
+              to: controller.view.state.selection.to,
+              parentType: controller.view.state.selection.$from.parent.type.name,
+            },
+            blocks: getTopLevelBlocks(controller).map((node) => node.type.name),
+          };
+        });
+      }
+
+      async function dispatchEditorKey(controller, key, { shiftKey = false } = {}) {
+        controller.view.dom.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key,
+            shiftKey,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
+
+      async function runTableScenario(key, eventOptions = {}) {
+        return withController(async (controller) => {
+          insertCommand(controller, "table");
+          controller.view.focus();
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          await dispatchEditorKey(controller, key, eventOptions);
+          assertIntroParagraphBeforeWidget(controller, "table");
+          return {
+            selection: {
+              from: controller.view.state.selection.from,
+              to: controller.view.state.selection.to,
+              parentType: controller.view.state.selection.$from.parent.type.name,
+            },
+            blocks: getTopLevelBlocks(controller).map((node) => node.type.name),
+          };
+        });
+      }
+
+      async function runLeadingTextSlotScenario(commandName, key, eventOptions = {}) {
+        return withController(async (controller) => {
+          insertCommand(controller, commandName, "");
+          const page = controller.view.state.doc.firstChild;
+          const widgetNode = page.firstChild;
+          const widgetPos = 1;
+
+          if (
+            !controller.exitFullLineWidgetBoundary(widgetPos, widgetNode, "before")
+          ) {
+            throw new Error(`Expected to exit before ${commandName}`);
+          }
+
+          const selection = controller.view.state.selection;
+          controller.handleTextInput(selection.from, selection.to, "A");
+
+          const blocks = getTopLevelBlocks(controller);
+
+          if (
+            blocks[0]?.type?.name !== "paragraph" ||
+            blocks[0].textContent !== "A"
+          ) {
+            throw new Error(
+              `Expected inserted paragraph before ${commandName}: ${JSON.stringify(
+                controller.view.state.doc.toJSON()
+              )}`
+            );
+          }
+
+          return {
+            selection: {
+              from: controller.view.state.selection.from,
+              to: controller.view.state.selection.to,
+              parentType: controller.view.state.selection.$from.parent.type.name,
+            },
+            blocks: blocks.map((node) => ({
+              type: node.type.name,
+              text: node.textContent ?? "",
+            })),
+          };
+        });
+      }
+
+      async function runFilledMathExitScenario(commandName, key, eventOptions = {}) {
+        return withController(async (controller) => {
+          insertCommand(controller, commandName, "");
+          const target = await waitFor(() => controller.getFocusedOrPendingMathTarget());
+          const mathView = await waitFor(() => controller.getMathView(target.id));
+          mathView.focusAtEdge("start");
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          mathView.appendText("x+y");
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          mathView.requestExit("before");
+          await new Promise((resolve) => setTimeout(resolve, 100));
+
+          const blocks = getTopLevelBlocks(controller);
+          const widgetBlock = blocks.find((node) =>
+            node.type.name === (commandName === "align" ? "align_block" : "gather_block")
+          );
+          const firstRow = widgetBlock?.firstChild;
+          const firstCell = firstRow?.firstChild;
+
+          if (firstCell?.attrs?.latex !== "x+y") {
+            throw new Error(
+              `Expected ${commandName} cell latex to persist: ${JSON.stringify(
+                controller.view.state.doc.toJSON()
+              )}`
+            );
+          }
+
+          if (controller.view.state.selection.$from.parent.type.name !== "paragraph") {
+            throw new Error(`Expected paragraph selection after exiting ${commandName}`);
+          }
+
+          return {
+            selection: {
+              from: controller.view.state.selection.from,
+              to: controller.view.state.selection.to,
+              parentType: controller.view.state.selection.$from.parent.type.name,
+            },
+            latex: firstCell.attrs.latex,
+          };
+        });
+      }
+
+      try {
+        const alignShiftTab = await runMathScenario("align", "Tab", { shiftKey: true });
+        const alignArrowLeft = await runMathScenario("align", "ArrowLeft");
+        const gatherShiftTab = await runMathScenario("gather", "Tab", { shiftKey: true });
+        const gatherArrowLeft = await runMathScenario("gather", "ArrowLeft");
+        const alignFilledShiftTab = await runFilledMathExitScenario("align", "Tab", {
+          shiftKey: true,
+        });
+        const gatherFilledShiftTab = await runFilledMathExitScenario("gather", "Tab", {
+          shiftKey: true,
+        });
+        const tableShiftTab = await runTableScenario("Tab", { shiftKey: true });
+        const tableArrowLeft = await runTableScenario("ArrowLeft");
+        const alignLeadingText = await runLeadingTextSlotScenario("align", "Tab", {
+          shiftKey: true,
+        });
+        const gatherLeadingText = await runLeadingTextSlotScenario("gather", "Tab", {
+          shiftKey: true,
+        });
+        const tableLeadingText = await runLeadingTextSlotScenario("table", "Tab", {
+          shiftKey: true,
+        });
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.alignShiftTab = JSON.stringify(alignShiftTab);
+        document.body.dataset.alignArrowLeft = JSON.stringify(alignArrowLeft);
+        document.body.dataset.gatherShiftTab = JSON.stringify(gatherShiftTab);
+        document.body.dataset.gatherArrowLeft = JSON.stringify(gatherArrowLeft);
+        document.body.dataset.alignFilledShiftTab = JSON.stringify(alignFilledShiftTab);
+        document.body.dataset.gatherFilledShiftTab = JSON.stringify(gatherFilledShiftTab);
+        document.body.dataset.tableShiftTab = JSON.stringify(tableShiftTab);
+        document.body.dataset.tableArrowLeft = JSON.stringify(tableArrowLeft);
+        document.body.dataset.alignLeadingText = JSON.stringify(alignLeadingText);
+        document.body.dataset.gatherLeadingText = JSON.stringify(gatherLeadingText);
+        document.body.dataset.tableLeadingText = JSON.stringify(tableLeadingText);
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

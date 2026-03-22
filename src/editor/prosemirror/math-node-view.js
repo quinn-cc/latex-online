@@ -1,5 +1,29 @@
 import { MATH_FONT_FAMILY_VARIABLES } from "../../core/config.js";
 import {
+  applyMathExtensions,
+  expandMathExtensionMenuCommand,
+  getSerializableMathLatex,
+  getMathExtensionMenuState,
+} from "./math-extensions/index.js";
+import {
+  getActiveMathArrayItemState,
+  getMathArrayEnvironmentRect,
+  resizeActiveMathArrayEnvironment,
+} from "./math-extensions/array-structures.js";
+import {
+  handleMathKeyDown,
+  handleMathMoveOut,
+  handleMathTabNavigation,
+  insertMathSpace,
+  isGridMathVariant,
+  moveWithinMathField,
+  removeEmptyMath,
+  requestMathExit,
+  handoffMathArrayTab,
+  selectMathArrayCell,
+  deleteStructuredParentBackward,
+} from "./interactions/math-navigation.js";
+import {
   getTextFontSizePx,
   normalizeMathFontFamily,
   normalizeMathFontSize,
@@ -21,10 +45,12 @@ class MathNodeView {
     this.isMounted = false;
     this.isDestroyed = false;
     this.pendingExitDirection = null;
+    this.pendingBoundaryDirection = null;
     this.isExiting = false;
     this.pendingFocusEdge = null;
     this.pendingFocusAttempts = 0;
     this.pendingFocusFrame = 0;
+    this.activeSettingsItemSignature = null;
 
     const isInlineVariant = variant === "inline";
     const isGridVariant = variant === "align" || variant === "gather";
@@ -43,11 +69,12 @@ class MathNodeView {
     this.dom.setAttribute("data-math-id", node.attrs.id);
 
     this.mathField = new options.MathfieldElementClass();
-    this.mathField.defaultMode = "math";
+    this.mathField.defaultMode = isInlineVariant ? "inline-math" : "math";
     this.mathField.smartMode = false;
     this.mathField.mathVirtualKeyboardPolicy = "manual";
     this.mathField.popoverPolicy = "off";
     this.mathField.environmentPopoverPolicy = "off";
+    applyMathExtensions(this.mathField);
     this.mathField.setAttribute(
       "aria-label",
       variant === "display"
@@ -67,6 +94,7 @@ class MathNodeView {
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleMoveOut = this.handleMoveOut.bind(this);
     this.handleMount = this.handleMount.bind(this);
+    this.handleSelectionChange = this.handleSelectionChange.bind(this);
     this.handleUnmount = this.handleUnmount.bind(this);
 
     this.dom.addEventListener("mousedown", this.handleMouseDown);
@@ -80,6 +108,7 @@ class MathNodeView {
     this.mathField.addEventListener("keydown", this.handleKeyDown, true);
     this.mathField.addEventListener("move-out", this.handleMoveOut);
     this.mathField.addEventListener("mount", this.handleMount);
+    this.mathField.addEventListener("selection-change", this.handleSelectionChange);
     this.mathField.addEventListener("unmount", this.handleUnmount);
 
     this.dom.append(this.mathField);
@@ -152,6 +181,9 @@ class MathNodeView {
   destroy() {
     this.isDestroyed = true;
     this.cancelPendingFocus();
+    this.pendingBoundaryDirection = null;
+    this.pendingExitDirection = null;
+    this.isExiting = false;
     this.dom.removeEventListener("mousedown", this.handleMouseDown);
     this.mathField.removeEventListener("focus", this.handleFocus);
     this.mathField.removeEventListener("blur", this.handleBlur);
@@ -163,6 +195,7 @@ class MathNodeView {
     this.mathField.removeEventListener("keydown", this.handleKeyDown, true);
     this.mathField.removeEventListener("move-out", this.handleMoveOut);
     this.mathField.removeEventListener("mount", this.handleMount);
+    this.mathField.removeEventListener("selection-change", this.handleSelectionChange);
     this.mathField.removeEventListener("unmount", this.handleUnmount);
     this.options.unregisterMathView(this.node.attrs.id, this);
     this.options.debug?.("math.nodeView.destroy", {
@@ -237,6 +270,7 @@ class MathNodeView {
 
   handleMount() {
     this.isMounted = true;
+    applyMathExtensions(this.mathField);
     this.options.debug?.("math.mount", {
       instanceId: this.instanceId,
       id: this.node.attrs.id,
@@ -267,6 +301,7 @@ class MathNodeView {
     this.isRemoving = false;
     this.isFocused = true;
     this.pendingExitDirection = null;
+    this.pendingBoundaryDirection = null;
     this.dom.classList.add("is-focused");
     this.options.debug?.("math.focus", {
       instanceId: this.instanceId,
@@ -279,6 +314,8 @@ class MathNodeView {
       lastOffset: this.mathField.lastOffset,
     });
     this.options.handleMathFocus(this.node.attrs.id, this.getPos());
+    this.notifySettingsItemChange(true);
+    this.options.handleBackslashMenuChange?.();
   }
 
   handleBlur() {
@@ -331,13 +368,16 @@ class MathNodeView {
       }
 
       const exitDirection = this.pendingExitDirection;
+      const boundaryDirection = this.pendingBoundaryDirection;
       this.pendingExitDirection = null;
+      this.pendingBoundaryDirection = null;
       this.options.debug?.("math.blur", {
         instanceId: this.instanceId,
         id: this.node.attrs.id,
         pos: this.safeGetPos(),
         variant: this.variant,
         exitDirection,
+        boundaryDirection,
         value: this.mathField.getValue(),
         activeElement: document.activeElement,
       });
@@ -354,8 +394,17 @@ class MathNodeView {
         return;
       }
 
-      this.options.handleMathBlur(this.node.attrs.id, this.getPos());
+      this.options.handleMathBlur(this.node.attrs.id, this.getPos(), {
+        boundaryDirection,
+      });
+      this.notifySettingsItemChange(true);
+      this.options.handleBackslashMenuChange?.();
     });
+  }
+
+  handleSelectionChange() {
+    this.notifySettingsItemChange();
+    this.options.handleBackslashMenuChange?.();
   }
 
   handleBeforeInput(event) {
@@ -377,11 +426,8 @@ class MathNodeView {
   }
 
   handleInput() {
-    const fieldValue = this.mathField.getValue();
-    this.draftAttrs = {
-      ...this.draftAttrs,
-      latex: fieldValue,
-    };
+    const fieldValue = this.syncDraftLatexFromField();
+
     if (this.options.shouldDebugLog?.("math.input")) {
       this.options.debug?.("math.input", {
         instanceId: this.instanceId,
@@ -406,6 +452,8 @@ class MathNodeView {
         value: this.mathField.getValue(),
       });
     }
+
+    this.options.handleBackslashMenuChange?.();
   }
 
   handleKeyDown(event) {
@@ -424,192 +472,36 @@ class MathNodeView {
       });
     }
 
-    if (
-      isGridMathVariant(this.variant) &&
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      !event.isComposing &&
-      event.key === "Enter"
-    ) {
-      if (event.shiftKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        const shiftEnterHandler = this.variant === "align"
-          ? this.options.handleAlignShiftEnter
-          : this.options.handleGatherShiftEnter;
-        shiftEnterHandler?.(this.getPos(), this.getDraftPatch());
-        return;
-      }
-
-      if (this.mathField.mode === "latex") {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      const enterHandler = this.variant === "align"
-        ? this.options.handleAlignEnter
-        : this.options.handleGatherEnter;
-      enterHandler?.(this.getPos(), this.getDraftPatch());
-      return;
-    }
-
-    if (
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      !event.isComposing &&
-      (event.key === "$" || event.key === "Escape")
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.requestExit("after");
-      return;
-    }
-
-    if (
-      (event.key === "Backspace" || event.key === "Delete") &&
-      this.mathField.getValue().trim() === ""
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-
-      if (isGridMathVariant(this.variant)) {
-        this.requestExit(event.key === "Backspace" ? "before" : "after");
-        return;
-      }
-
-      this.removeEmptyMath(event.key === "Backspace" ? "before" : "after");
-      return;
-    }
-
-    if (
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      event.key === "ArrowLeft" &&
-      this.mathField.selectionIsCollapsed &&
-      this.mathField.position === 0
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.requestExit("before");
-      return;
-    }
-
-    if (
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      event.key === "ArrowRight" &&
-      this.mathField.selectionIsCollapsed &&
-      this.mathField.position === this.mathField.lastOffset
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.requestExit("after");
-      return;
-    }
-
-    if (
-      this.variant === "display" &&
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      event.key === "ArrowUp"
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.requestExit("before");
-      return;
-    }
-
-    if (
-      this.variant === "display" &&
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      event.key === "ArrowDown"
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.requestExit("after");
-    }
+    handleMathKeyDown(this, event);
   }
 
   handleMoveOut(event) {
-    this.options.debug?.("math.moveOut", {
-      instanceId: this.instanceId,
-      id: this.node.attrs.id,
-      pos: this.safeGetPos(),
-      variant: this.variant,
-      direction: event.detail.direction,
+    handleMathMoveOut(this, event);
+  }
+
+  getNavigationSnapshot() {
+    return JSON.stringify({
+      position: this.mathField.position,
+      lastOffset: this.mathField.lastOffset,
+      selection: this.mathField.selection ?? null,
+      value: this.mathField.getValue(),
     });
+  }
 
-    if (event.detail.direction === "forward") {
-      event.preventDefault();
-      event.stopPropagation();
-      this.requestExit("after");
-      return;
-    }
+  moveWithinMathField(direction) {
+    return moveWithinMathField(this, direction);
+  }
 
-    if (event.detail.direction === "backward") {
-      event.preventDefault();
-      event.stopPropagation();
-      this.requestExit("before");
-    }
+  insertMathSpace() {
+    return insertMathSpace(this);
+  }
+
+  handleTabNavigation(direction) {
+    return handleMathTabNavigation(this, direction);
   }
 
   requestExit(direction) {
-    if (this.pendingExitDirection || this.isExiting) {
-      this.options.debug?.("math.requestExit.ignored", {
-        instanceId: this.instanceId,
-        id: this.node.attrs.id,
-        pos: this.safeGetPos(),
-        variant: this.variant,
-        direction,
-        pendingExitDirection: this.pendingExitDirection,
-      });
-      return;
-    }
-
-    this.pendingExitDirection = direction;
-    this.isExiting = true;
-    this.dom.classList.remove("is-focused");
-    this.options.debug?.("math.requestExit", {
-      instanceId: this.instanceId,
-      id: this.node.attrs.id,
-      pos: this.safeGetPos(),
-      variant: this.variant,
-      direction,
-      value: this.mathField.getValue(),
-    });
-
-    if (!isGridMathVariant(this.variant) && this.mathField.getValue().trim() === "") {
-      const didRemove = this.options.removeMathNode(this.getPos(), direction);
-
-      if (!didRemove) {
-        this.isExiting = false;
-        this.pendingExitDirection = null;
-        this.dom.classList.add("is-focused");
-      }
-
-      return;
-    }
-
-    const patch = this.getDraftPatch();
-    const didExit = this.options.commitAndExitMathNode(this.getPos(), direction, patch);
-
-    if (!didExit) {
-      this.isExiting = false;
-      this.pendingExitDirection = null;
-      this.dom.classList.add("is-focused");
-    }
+    return requestMathExit(this, direction);
   }
 
   safeGetPos() {
@@ -735,30 +627,7 @@ class MathNodeView {
   }
 
   removeEmptyMath(direction) {
-    if (this.isRemoving) {
-      this.options.debug?.("math.removeEmptyMath.ignored", {
-        instanceId: this.instanceId,
-        id: this.node.attrs.id,
-        pos: this.safeGetPos(),
-        variant: this.variant,
-        direction,
-      });
-      return;
-    }
-
-    this.isRemoving = true;
-    this.isExiting = false;
-    this.pendingExitDirection = null;
-    this.dom.classList.remove("is-focused");
-    this.options.debug?.("math.removeEmptyMath", {
-      instanceId: this.instanceId,
-      id: this.node.attrs.id,
-      pos: this.safeGetPos(),
-      variant: this.variant,
-      direction,
-      activeElement: document.activeElement,
-    });
-    this.options.removeMathNode(this.getPos(), direction);
+    return removeEmptyMath(this, direction);
   }
 
   appendText(text) {
@@ -810,6 +679,7 @@ class MathNodeView {
   }
 
   commitDraft() {
+    this.syncDraftLatexFromField();
     const patch = this.getDraftPatch();
 
     if (Object.keys(patch).length === 0) {
@@ -827,21 +697,196 @@ class MathNodeView {
     });
     return didCommit;
   }
-}
 
-function isGridMathVariant(variant) {
-  return variant === "align" || variant === "gather";
+  syncDraftLatexFromField() {
+    let fieldValue = "";
+
+    try {
+      fieldValue = getSerializableMathLatex(this.mathField);
+    } catch (_error) {
+      fieldValue = "";
+    }
+
+    if (!fieldValue) {
+      try {
+        fieldValue = this.mathField.getValue();
+      } catch (_error) {
+        fieldValue = "";
+      }
+    }
+
+    this.draftAttrs = {
+      ...this.draftAttrs,
+      latex: fieldValue,
+    };
+    return fieldValue;
+  }
+
+  getActiveSettingsItemState() {
+    if (!this.isFocused) {
+      return null;
+    }
+
+    return getActiveMathArrayItemState(this.mathField, {
+      mathId: this.node.attrs.id,
+      pos: this.safeGetPos(),
+    });
+  }
+
+  getActiveBackslashMenuState() {
+    if (!this.isFocused) {
+      return null;
+    }
+
+    const menuState = getMathExtensionMenuState(this.mathField);
+
+    if (!menuState) {
+      return null;
+    }
+
+    return {
+      ...menuState,
+      mathId: this.node.attrs.id,
+    };
+  }
+
+  getBackslashMenuClientRect(menuState) {
+    if (!menuState || menuState.mathId !== this.node.attrs.id) {
+      return null;
+    }
+
+    const info = this.mathField.getElementInfo(this.mathField.position);
+    const bounds = info?.bounds;
+
+    if (bounds && bounds.width >= 0 && bounds.height >= 0) {
+      return {
+        top: bounds.bottom,
+        right: bounds.right,
+        bottom: bounds.bottom,
+        left: bounds.left,
+        width: Math.max(bounds.width, 1),
+        height: Math.max(bounds.height, 1),
+      };
+    }
+
+    const rect = this.mathField.getBoundingClientRect();
+
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+
+    return {
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  applyBackslashMenuCommand(commandName) {
+    this.mathField.focus({ preventScroll: true });
+    const didExpand = expandMathExtensionMenuCommand(this.mathField, commandName);
+
+    if (!didExpand) {
+      return false;
+    }
+
+    this.draftAttrs = {
+      ...this.draftAttrs,
+      latex: getSerializableMathLatex(this.mathField),
+    };
+    this.options.handleBackslashMenuChange?.();
+    return true;
+  }
+
+  getSettingsItemClientRect(item) {
+    if (item?.source !== "math-structure" || item.mathId !== this.node.attrs.id) {
+      return null;
+    }
+
+    return getMathArrayEnvironmentRect(this.mathField, item.type);
+  }
+
+  updateMathArraySettings(item, settings) {
+    if (item?.source !== "math-structure" || item.mathId !== this.node.attrs.id) {
+      return false;
+    }
+
+    this.focusMathArraySettingsItem(item);
+
+    const didUpdate = resizeActiveMathArrayEnvironment(this.mathField, settings, {
+      expectedType: item.type,
+      anchorRowIndex: item.anchorRowIndex,
+      anchorColumnIndex: item.anchorColumnIndex,
+    });
+
+    if (!didUpdate) {
+      return false;
+    }
+
+    this.draftAttrs = {
+      ...this.draftAttrs,
+      latex: getSerializableMathLatex(this.mathField),
+    };
+    this.notifySettingsItemChange(true);
+    return true;
+  }
+
+  focusMathArraySettingsItem(item) {
+    if (item?.source !== "math-structure" || item.mathId !== this.node.attrs.id) {
+      return false;
+    }
+
+    const selectionRange = Array.isArray(item.anchorRange)
+      ? item.anchorRange
+      : Array.isArray(item.environmentRange)
+        ? item.environmentRange
+        : null;
+
+    if (!selectionRange || selectionRange.length !== 2) {
+      return false;
+    }
+
+    this.mathField.selection = {
+      ranges: [selectionRange],
+      direction: "forward",
+    };
+    this.mathField.focus({ preventScroll: true });
+    return true;
+  }
+
+  notifySettingsItemChange(force = false) {
+    const activeItem = this.getActiveSettingsItemState();
+    const nextSignature = activeItem
+      ? `${activeItem.type}:${activeItem.mathId}:${JSON.stringify(activeItem.settings)}`
+      : null;
+
+    if (!force && nextSignature === this.activeSettingsItemSignature) {
+      return;
+    }
+
+    this.activeSettingsItemSignature = nextSignature;
+    this.options.handleMathStructureChange?.(this.node.attrs.id, activeItem);
+  }
+
+  handoffMathArrayTab(direction) {
+    return handoffMathArrayTab(this, direction);
+  }
+
+  selectMathArrayCell(row, column, direction = "forward") {
+    return selectMathArrayCell(this, row, column, direction);
+  }
+
+  deleteStructuredParentBackward() {
+    return deleteStructuredParentBackward(this);
+  }
 }
 
 export class InlineMathNodeView extends MathNodeView {
   constructor(node, view, getPos, options) {
     super(node, view, getPos, options, "inline");
-  }
-}
-
-export class DisplayMathNodeView extends MathNodeView {
-  constructor(node, view, getPos, options) {
-    super(node, view, getPos, options, "display");
   }
 }
 

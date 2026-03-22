@@ -1,5 +1,3 @@
-import { Fragment } from "prosemirror-model";
-import { TextSelection } from "prosemirror-state";
 import {
   createGridRowsWithInsertedRow,
   createResizedGridRows,
@@ -9,8 +7,8 @@ import {
 } from "../grid-utils.js";
 import {
   createMathGridCellAttrs,
-  createPlainParagraphNode,
 } from "./math-grid.js";
+import { createFullLineWidgetCommand } from "./block-widgets.js";
 
 const ALIGN_RELATION_OPERATOR_PATTERNS = [
   { pattern: /^\\leq/, value: "\\leq" },
@@ -191,56 +189,35 @@ export function findAlignMathPos(alignBlockNode, alignBlockPos, rowIndex, cellIn
 }
 
 export function createAlignCommand(schema) {
-  return {
+  return createFullLineWidgetCommand({
+    schema,
     name: "align",
     title: "Align",
     description: "Insert an align environment",
-    execute({ state, match, controller }) {
-      const paragraphNode = match.paragraphNode;
-      const parentNode = match.parentNode;
-
-      if (!paragraphNode || !parentNode) {
-        return null;
-      }
-
-      if (
-        parentNode.type !== schema.nodes.page &&
-        parentNode.type !== schema.nodes.list_item &&
-        parentNode.type !== schema.nodes.table_cell
-      ) {
-        return null;
-      }
-
+    allowedParentTypes: [
+      schema.nodes.page,
+      schema.nodes.list_item,
+      schema.nodes.table_cell,
+    ],
+    createBlockNode: ({ state, controller }) => {
       const alignBlock = createDefaultAlignBlock(
         schema,
         1,
         1,
         (_rowIndex, _cellIndex) => createAlignCellAttrs(controller, state)
       );
-      const firstMathNode = alignBlock.firstChild?.firstChild;
-      const firstMathId = firstMathNode?.attrs?.id ?? null;
-      const trailingParagraph = createPlainParagraphNode(schema, paragraphNode.attrs);
-      const replacement = Fragment.fromArray([alignBlock, trailingParagraph]);
-      const alignPos = match.paragraphPos;
-      const firstMathPos = findAlignMathPos(alignBlock, alignPos, 0, 0);
-      const tr = state.tr.replaceWith(
-        match.paragraphPos,
-        match.paragraphPos + paragraphNode.nodeSize,
-        replacement
-      );
-
-      tr.setSelection(
-        TextSelection.near(
-          tr.doc.resolve(firstMathPos + (firstMathNode?.nodeSize ?? 1)),
-          -1
-        )
-      );
+      return alignBlock;
+    },
+    getSelectionTarget: ({ blockNode, blockPos }) => {
+      const firstMathNode = blockNode.firstChild?.firstChild;
+      const firstMathPos = findAlignMathPos(blockNode, blockPos, 0, 0);
 
       return {
-        tr,
-        focusMathId: firstMathId,
+        selectionPos: firstMathPos + (firstMathNode?.nodeSize ?? 1),
+        selectionBias: -1,
+        focusMathId: firstMathNode?.attrs?.id ?? null,
         focusMathEdge: "start",
       };
     },
-  };
+  });
 }

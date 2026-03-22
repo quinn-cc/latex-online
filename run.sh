@@ -3,6 +3,10 @@
 set -euo pipefail
 
 PORT="${1:-4173}"
+PYTHON_BIN="./.venv/bin/python"
 
-echo "Serving Latex Online at http://127.0.0.1:${PORT}/"
-exec python3 -m http.server "${PORT}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  PYTHON_BIN="python3"
+fi
+
+exec "${PYTHON_BIN}" ./server.py "${PORT}"

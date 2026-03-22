@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "serve": "python3 -m http.server 4173"
+    "bootstrap": "./scripts/bootstrap.sh",
+    "serve": "python3 ./server.py 4173"
   },
   "dependencies": {
     "prosemirror-commands": "^1.7.1",

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Cases Settings Smoke</title>
+  </head>
+  <body>
+    <script type="module">
+      const iframe = document.createElement("iframe");
+      iframe.src = "./?debug=1";
+      iframe.style.width = "1280px";
+      iframe.style.height = "900px";
+      document.body.append(iframe);
+
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      function assert(condition, message) {
+        if (!condition) {
+          throw new Error(message);
+        }
+      }
+
+      try {
+        await waitFor(
+          () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+        );
+
+        const controller = iframe.contentWindow.__latexOnlineDebug.controller;
+        const insertion = controller.buildInlineMathInsertionTransaction(
+          controller.view.state,
+          2,
+          2,
+          ""
+        );
+
+        controller.dispatchTransaction(insertion);
+
+        await waitFor(() => controller.getFocusedOrPendingMathTarget());
+
+        const mathTarget = controller.getFocusedOrPendingMathTarget();
+        const mathView = controller.getMathView(mathTarget.id);
+
+        assert(mathView, "Expected math view after inline math insertion");
+        assert(
+          mathView.mathField.insert(
+            "\\begin{cases}\n\\placeholder{} & \\placeholder{} \\\\\n\\placeholder{} & \\placeholder{}\n\\end{cases}",
+            {
+              format: "latex",
+              mode: "math",
+              selectionMode: "placeholder",
+            }
+          ),
+          "Expected cases environment insertion"
+        );
+        mathView.notifySettingsItemChange(true);
+        controller.emitSlashItemState();
+
+        await waitFor(() => {
+          const item = controller.getActiveSlashItemState();
+          return item?.type === "cases";
+        });
+
+        const item = controller.getActiveSlashItemState();
+        assert(item.settings.rowCount === 2, "Expected default cases rowCount to be 2");
+        assert(
+          controller.updateSlashItemSettings(item, { rowCount: 3 }),
+          "Expected cases settings update to succeed"
+        );
+
+        await waitFor(() => {
+          const nextItem = controller.getActiveSlashItemState();
+          return nextItem?.type === "cases" && nextItem.settings.rowCount === 3;
+        });
+
+        const updatedItem = controller.getActiveSlashItemState();
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.rowCount = String(updatedItem.settings.rowCount);
+        document.body.dataset.latex =
+          controller.getMathView(updatedItem.mathId)?.mathField?.getValue?.() ?? "";
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

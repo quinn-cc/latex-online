@@ -1,5 +1,3 @@
-import { Fragment } from "prosemirror-model";
-import { TextSelection } from "prosemirror-state";
 import {
   createGridRowsWithInsertedRow,
   createResizedGridRows,
@@ -9,8 +7,8 @@ import {
 } from "../grid-utils.js";
 import {
   createMathGridCellAttrs,
-  createPlainParagraphNode,
 } from "./math-grid.js";
+import { createFullLineWidgetCommand } from "./block-widgets.js";
 
 export function normalizeGatherColumnCount(value, fallbackValue = 1) {
   const safeFallbackValue = normalizePositiveInt(fallbackValue, 1);
@@ -151,56 +149,35 @@ export function findGatherMathPos(gatherBlockNode, gatherBlockPos, rowIndex, cel
 }
 
 export function createGatherCommand(schema) {
-  return {
+  return createFullLineWidgetCommand({
+    schema,
     name: "gather",
     title: "Gather",
     description: "Insert a gather environment",
-    execute({ state, match, controller }) {
-      const paragraphNode = match.paragraphNode;
-      const parentNode = match.parentNode;
-
-      if (!paragraphNode || !parentNode) {
-        return null;
-      }
-
-      if (
-        parentNode.type !== schema.nodes.page &&
-        parentNode.type !== schema.nodes.list_item &&
-        parentNode.type !== schema.nodes.table_cell
-      ) {
-        return null;
-      }
-
+    allowedParentTypes: [
+      schema.nodes.page,
+      schema.nodes.list_item,
+      schema.nodes.table_cell,
+    ],
+    createBlockNode: ({ state, controller }) => {
       const gatherBlock = createDefaultGatherBlock(
         schema,
         1,
         1,
         (_rowIndex, _cellIndex) => createGatherCellAttrs(controller, state)
       );
-      const firstMathNode = gatherBlock.firstChild?.firstChild;
-      const firstMathId = firstMathNode?.attrs?.id ?? null;
-      const trailingParagraph = createPlainParagraphNode(schema, paragraphNode.attrs);
-      const replacement = Fragment.fromArray([gatherBlock, trailingParagraph]);
-      const gatherPos = match.paragraphPos;
-      const firstMathPos = findGatherMathPos(gatherBlock, gatherPos, 0, 0);
-      const tr = state.tr.replaceWith(
-        match.paragraphPos,
-        match.paragraphPos + paragraphNode.nodeSize,
-        replacement
-      );
-
-      tr.setSelection(
-        TextSelection.near(
-          tr.doc.resolve(firstMathPos + (firstMathNode?.nodeSize ?? 1)),
-          -1
-        )
-      );
+      return gatherBlock;
+    },
+    getSelectionTarget: ({ blockNode, blockPos }) => {
+      const firstMathNode = blockNode.firstChild?.firstChild;
+      const firstMathPos = findGatherMathPos(blockNode, blockPos, 0, 0);
 
       return {
-        tr,
-        focusMathId: firstMathId,
+        selectionPos: firstMathPos + (firstMathNode?.nodeSize ?? 1),
+        selectionBias: -1,
+        focusMathId: firstMathNode?.attrs?.id ?? null,
         focusMathEdge: "start",
       };
     },
-  };
+  });
 }

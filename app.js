@@ -1,5 +1,7 @@
 import {
   BUILD_SIGNATURE_KEY,
+  CURRENT_DOCUMENT_STORAGE_KEY,
+  DEFAULT_DOCUMENT_TITLE,
   DEFAULT_LATEX_FILENAME,
   DEFAULT_PAGE_ZOOM,
   LAST_SAVE_TIME_KEY,
@@ -14,6 +16,8 @@ import {
   VIEW_MODE_STORAGE_KEY,
 } from "./src/core/config.js";
 import * as dom from "./src/core/dom.js";
+import { bindDocumentUi } from "./src/core/document-ui.js";
+import { createDocumentLibraryController } from "./src/core/document-storage.js";
 import { downloadTextFile } from "./src/core/file-actions.js";
 import {
   createDefaultPageSettings,
@@ -23,11 +27,13 @@ import { createStorageController } from "./src/core/storage.js";
 import { applyViewMode, DEFAULT_VIEW_MODE, normalizeViewMode } from "./src/core/view-mode.js";
 import { createZoomController } from "./src/core/zoom.js";
 import {
+  createEmptyDocument,
   parseStoredDocument,
   serializeDocument,
 } from "./src/editor/prosemirror/document.js";
 import { createPaperEditorController } from "./src/editor/prosemirror/controller.js";
 import { createEditorDebugger } from "./src/editor/prosemirror/debug.js";
+import { bindBackslashMenuUi } from "./src/editor/prosemirror/backslash-menu-ui.js";
 import { bindSlashItemSettingsUi } from "./src/editor/prosemirror/slash-item-settings-ui.js";
 import {
   bindEditorUi,
@@ -53,6 +59,8 @@ const buildAssetUrls = [
   new URL("./styles.css", import.meta.url).href,
   import.meta.url,
   new URL("./src/core/config.js", import.meta.url).href,
+  new URL("./src/core/document-storage.js", import.meta.url).href,
+  new URL("./src/core/document-ui.js", import.meta.url).href,
   new URL("./src/core/dom.js", import.meta.url).href,
   new URL("./src/core/file-actions.js", import.meta.url).href,
   new URL("./src/core/page-settings.js", import.meta.url).href,
@@ -60,6 +68,7 @@ const buildAssetUrls = [
   new URL("./src/core/view-mode.js", import.meta.url).href,
   new URL("./src/core/zoom.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/backslash-commands/align.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/backslash-menu-ui.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/backslash-commands/gather.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/backslash-commands/math-grid.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/backslash-commands/table.js", import.meta.url).href,
@@ -69,6 +78,13 @@ const buildAssetUrls = [
   new URL("./src/editor/prosemirror/grid-utils.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/latex.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/math-node-view.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/math-extensions/array-structures.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/math-extensions/builtin-commands.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/math-extensions/cases.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/math-extensions/index.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/math-extensions/mathlive-command-catalog.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/math-extensions/matrix.js", import.meta.url).href,
+  new URL("./src/editor/prosemirror/math-extensions/registry.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/math-trigger-plugin.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/options.js", import.meta.url).href,
   new URL("./src/editor/prosemirror/schema.js", import.meta.url).href,
@@ -140,30 +156,106 @@ async function initializeApp() {
     let slashItemSettingsUi = {
       render() {},
     };
+    let backslashMenuUi = {
+      render() {},
+    };
+    let documentUi = {
+      renderDocumentState() {},
+    };
+    const documentController = createDocumentLibraryController({
+      currentDocumentStorageKey: CURRENT_DOCUMENT_STORAGE_KEY,
+      onStateChange: (documentState) => {
+        documentUi.renderDocumentState(documentState);
+      },
+    });
+    await documentController.initialize();
+    let controller = null;
+    const getSerializedDocument = (doc = null, pageSettings = currentPageSettings) => {
+      const sourceDoc = doc ?? controller?.getDocument?.() ?? createEmptyDocument();
+      return serializeDocument(sourceDoc, pageSettings);
+    };
 
-    const controller = createPaperEditorController({
+    controller = createPaperEditorController({
       mount: editor,
       initialDoc: initialStoredState.doc,
       initialPageSettings: currentPageSettings,
       saveDocument: (doc) => {
-        storageController.saveDocument(serializeDocument(doc, currentPageSettings));
+        const serializedValue = serializeDocument(doc, currentPageSettings);
+        storageController.saveDocument(serializedValue);
+        documentController.scheduleCurrentDocumentSave({
+          serializedValue,
+          pageSettings: currentPageSettings,
+        });
       },
       MathfieldElementClass: MathfieldElement,
       onUiStateChange: renderToolbarState,
+      onBackslashMenuStateChange: (menuState) => {
+        backslashMenuUi.render(menuState);
+      },
       onSlashItemStateChange: (item) => {
         slashItemSettingsUi.render(item);
       },
       debug: editorDebugger,
     });
+    backslashMenuUi = bindBackslashMenuUi({
+      controller,
+    });
     slashItemSettingsUi = bindSlashItemSettingsUi({
       controller,
     });
+    const loadSerializedDocument = ({ serializedValue, pageSettings, meta = null }) => {
+      const parsedDocument = parseStoredDocument(serializedValue);
+      currentPageSettings = normalizePageSettings(
+        pageSettings ?? parsedDocument.pageSettings ?? createDefaultPageSettings()
+      );
+      controller.loadDocument(parsedDocument.doc);
+      applyCurrentPageSettings();
+      storageController.saveDocument(getSerializedDocument());
+      if (!meta) {
+        documentController.clearCurrentDocument();
+      }
+    };
+    documentUi = bindDocumentUi({
+      documentController,
+      controller,
+      getCurrentDocumentPayload: () => ({
+        title:
+          documentController.getCurrentDocument()?.title ?? DEFAULT_DOCUMENT_TITLE,
+        serializedValue: getSerializedDocument(),
+        pageSettings: currentPageSettings,
+      }),
+      createBlankDocumentPayload: (title) => {
+        const blankPageSettings = createDefaultPageSettings();
+        return {
+          title: String(title ?? "").trim() || DEFAULT_DOCUMENT_TITLE,
+          serializedValue: serializeDocument(
+            createEmptyDocument(),
+            blankPageSettings
+          ),
+          pageSettings: blankPageSettings,
+        };
+      },
+      loadSavedDocument: ({ meta, serializedValue, pageSettings }) => {
+        loadSerializedDocument({
+          serializedValue,
+          pageSettings,
+          meta,
+        });
+      },
+      onNewLocalDocument: () => {
+        currentPageSettings = createDefaultPageSettings();
+        controller.loadDocument(createEmptyDocument());
+        applyCurrentPageSettings();
+        storageController.saveDocument(getSerializedDocument());
+        documentController.clearCurrentDocument();
+      },
+    });
+    backslashMenuUi.render(controller.getActiveBackslashMenuState());
     slashItemSettingsUi.render(controller.getActiveSlashItemState());
+    documentUi.renderDocumentState(documentController.getState());
 
     const persistCurrentState = () => {
-      storageController.saveDocument(
-        serializeDocument(controller.getDocument(), currentPageSettings)
-      );
+      storageController.saveDocument(getSerializedDocument());
     };
 
     const applyWorkspaceViewMode = (nextViewMode) => {

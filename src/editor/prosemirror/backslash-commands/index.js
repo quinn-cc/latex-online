@@ -1,6 +1,7 @@
 import { TextSelection } from "prosemirror-state";
 import { createAlignCommand } from "./align.js";
 import { createGatherCommand } from "./gather.js";
+import { createDisplayMathCommand, createInlineMathCommand } from "./math.js";
 import { createTableCommand } from "./table.js";
 
 function paragraphContainsOnlyText(paragraphNode) {
@@ -20,6 +21,8 @@ function paragraphContainsOnlyText(paragraphNode) {
 
 export function createBackslashCommandRegistry(schema) {
   const commands = [
+    createInlineMathCommand(schema),
+    createDisplayMathCommand(schema),
     createTableCommand(schema),
     createAlignCommand(schema),
     createGatherCommand(schema),
@@ -29,6 +32,50 @@ export function createBackslashCommandRegistry(schema) {
   return {
     commands,
     commandsByName,
+  };
+}
+
+function scoreCommandMatch(command, query) {
+  if (!query) {
+    return 0;
+  }
+
+  const normalizedQuery = query.toLowerCase();
+  const normalizedName = command.name.toLowerCase();
+
+  if (normalizedName === normalizedQuery) {
+    return 3;
+  }
+
+  if (normalizedName.startsWith(normalizedQuery)) {
+    return 2;
+  }
+
+  if (normalizedName.includes(normalizedQuery)) {
+    return 1;
+  }
+
+  return -1;
+}
+
+function getActiveBackslashSuffix(text) {
+  const normalizedText = String(text ?? "").trim();
+
+  if (!normalizedText.includes("\\")) {
+    return null;
+  }
+
+  const commandStart = normalizedText.lastIndexOf("\\");
+  const suffix = normalizedText.slice(commandStart + 1);
+
+  if (!/^[A-Za-z]*$/.test(suffix)) {
+    return null;
+  }
+
+  return {
+    normalizedText,
+    commandStart,
+    nameQuery: suffix.toLowerCase(),
   };
 }
 
@@ -53,14 +100,15 @@ export function getBackslashCommandQuery(state) {
   const fullText = paragraphNode.textContent;
   const beforeText = fullText.slice(0, $from.parentOffset);
   const afterText = fullText.slice($from.parentOffset);
-  const queryMatch = /^\\([A-Za-z]*)$/.exec(beforeText.trim());
+  const activeSuffix = getActiveBackslashSuffix(beforeText);
 
-  if (!queryMatch || afterText.trim() !== "") {
+  if (!activeSuffix || afterText.trim() !== "") {
     return null;
   }
 
   return {
-    nameQuery: queryMatch[1].toLowerCase(),
+    nameQuery: activeSuffix.nameQuery,
+    commandStart: activeSuffix.commandStart,
     fullText,
     beforeText,
     afterText,
@@ -91,5 +139,44 @@ export function getExecutableBackslashCommandMatch(state, registry) {
   return {
     command,
     query,
+  };
+}
+
+export function getBackslashCommandSuggestions(state, registry) {
+  const query = getBackslashCommandQuery(state);
+
+  if (!query) {
+    return null;
+  }
+
+  const items = registry.commands
+    .map((command) => ({
+      command,
+      score: scoreCommandMatch(command, query.nameQuery),
+    }))
+    .filter((entry) => entry.score >= 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return left.command.name.localeCompare(right.command.name);
+    })
+    .map(({ command }) => ({
+      name: command.name,
+      title: command.title,
+      description: command.description,
+    }));
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  return {
+    source: "text",
+    query: query.nameQuery,
+    sessionKey: `${query.paragraphPos}:${query.commandStart}`,
+    items,
+    queryData: query,
   };
 }

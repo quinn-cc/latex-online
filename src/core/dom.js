@@ -3,6 +3,10 @@ export const saveStatus = document.getElementById("save-status");
 export const clearPageButton = document.getElementById("clear-page");
 export const paperColumn = document.getElementById("paper-column");
 export const fileMenu = document.getElementById("file-menu");
+export const fileNewDocumentButton = document.getElementById("file-new-document");
+export const fileOpenDocumentButton = document.getElementById("file-open-document");
+export const fileSaveDocumentButton = document.getElementById("file-save-document");
+export const fileAccountButton = document.getElementById("file-account");
 export const fileSaveButton = document.getElementById("file-save");
 export const filePrintButton = document.getElementById("file-print");
 export const editMenu = document.getElementById("edit-menu");
@@ -20,10 +24,52 @@ export const pageMarginTopInput = document.getElementById("page-margin-top-input
 export const pageMarginRightInput = document.getElementById("page-margin-right-input");
 export const pageMarginBottomInput = document.getElementById("page-margin-bottom-input");
 export const pageMarginLeftInput = document.getElementById("page-margin-left-input");
+export const accountDialog = document.getElementById("account-dialog");
+export const accountForm = document.getElementById("account-form");
+export const accountCloseButton = document.getElementById("account-close");
+export const accountStatus = document.getElementById("account-status");
+export const accountSignInButton = document.getElementById("account-sign-in");
+export const accountRegisterButton = document.getElementById("account-register");
+export const accountSignOutButton = document.getElementById("account-sign-out");
+export const accountUsernameInput = document.getElementById("account-username");
+export const accountPasswordInput = document.getElementById("account-password");
+export const documentsDialog = document.getElementById("documents-dialog");
+export const documentsForm = document.getElementById("documents-form");
+export const documentsCloseButton = document.getElementById("documents-close");
+export const documentsStatus = document.getElementById("documents-status");
+export const documentsRefreshButton = document.getElementById("documents-refresh");
+export const newDocumentTitleInput = document.getElementById("new-document-title");
+export const createDocumentButton = document.getElementById("create-document");
+export const documentList = document.getElementById("document-list");
+export const documentHome = document.getElementById("document-home");
+export const documentHomeStatus = document.getElementById("document-home-status");
+export const documentHomeAccountButton = document.getElementById(
+  "document-home-account-button"
+);
+export const documentHomeDocumentsStatus = document.getElementById(
+  "document-home-documents-status"
+);
+export const documentHomeRefreshButton = document.getElementById(
+  "document-home-refresh"
+);
+export const documentHomeNewDocumentTitleInput = document.getElementById(
+  "document-home-new-document-title"
+);
+export const documentHomeCreateDocumentButton = document.getElementById(
+  "document-home-create-document"
+);
+export const documentHomeDocumentList = document.getElementById(
+  "document-home-document-list"
+);
 export const zoomOutButton = document.getElementById("zoom-out");
 export const zoomInButton = document.getElementById("zoom-in");
 export const zoomResetButton = document.getElementById("zoom-reset");
 export const zoomLevel = document.getElementById("zoom-level");
+export const documentStatus = document.getElementById("document-status");
+export const cloudStatus = document.getElementById("cloud-status");
+export const backslashMenu = document.getElementById("backslash-menu");
+export const backslashMenuQuery = document.getElementById("backslash-menu-query");
+export const backslashMenuList = document.getElementById("backslash-menu-list");
 export const slashItemSettings = document.getElementById("slash-item-settings");
 export const slashItemSettingsToggleButton = document.getElementById(
   "slash-item-settings-toggle"

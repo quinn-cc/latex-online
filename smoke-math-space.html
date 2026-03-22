@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Math Space Smoke</title>
+  </head>
+  <body data-result="pending">
+    <script type="module">
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      async function withController(run) {
+        const iframe = document.createElement("iframe");
+        iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
+        iframe.style.width = "1280px";
+        iframe.style.height = "900px";
+        document.body.append(iframe);
+
+        await waitFor(
+          () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+        );
+
+        return run(iframe.contentWindow.__latexOnlineDebug.controller);
+      }
+
+      function dispatchSpace(mathView) {
+        mathView.mathField.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: " ",
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      }
+
+      async function runPlainSpaceScenario() {
+        return withController(async (controller) => {
+          const selection = controller.view.state.selection;
+          const tr = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            selection.from,
+            selection.to,
+            ""
+          );
+          controller.dispatchTransaction(tr);
+
+          const target = await waitFor(() => controller.getFocusedOrPendingMathTarget());
+          const mathView = controller.getMathView(target.id);
+
+          if (!mathView) {
+            throw new Error("Expected inline math view");
+          }
+
+          dispatchSpace(mathView);
+          await new Promise((resolve) => setTimeout(resolve, 80));
+
+          return mathView.mathField.getValue("latex-expanded");
+        });
+      }
+
+      async function runCommandExpandScenario() {
+        return withController(async (controller) => {
+          const selection = controller.view.state.selection;
+          const tr = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            selection.from,
+            selection.to,
+            ""
+          );
+          controller.dispatchTransaction(tr);
+
+          const target = await waitFor(() => controller.getFocusedOrPendingMathTarget());
+          const mathView = controller.getMathView(target.id);
+
+          if (!mathView) {
+            throw new Error("Expected inline math view");
+          }
+
+          mathView.mathField.setValue("\\alpha");
+          dispatchSpace(mathView);
+          await new Promise((resolve) => setTimeout(resolve, 80));
+
+          return mathView.mathField.getValue("latex-expanded");
+        });
+      }
+
+      try {
+        const plainValue = await runPlainSpaceScenario();
+        const expandedValue = await runCommandExpandScenario();
+
+        if (!/space|\\ /.test(plainValue)) {
+          throw new Error(`Expected math space insertion, got ${plainValue}`);
+        }
+
+        if (!expandedValue.includes("\\alpha")) {
+          throw new Error(`Expected command expansion to preserve alpha, got ${expandedValue}`);
+        }
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.plain = plainValue;
+        document.body.dataset.expanded = expandedValue;
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

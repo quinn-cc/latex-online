@@ -3,8 +3,10 @@ export const BUILD_SIGNATURE_KEY = "latex-online-build-signature";
 export const LAST_SAVE_TIME_KEY = "latex-online-last-save-time";
 export const PAGE_ZOOM_STORAGE_KEY = "latex-online-page-zoom";
 export const VIEW_MODE_STORAGE_KEY = "latex-online-view-mode";
+export const CURRENT_DOCUMENT_STORAGE_KEY = "latex-online-current-document";
 export const STORAGE_FORMAT_VERSION = 3;
 export const DEFAULT_LATEX_FILENAME = "document.tex";
+export const DEFAULT_DOCUMENT_TITLE = "Untitled document";
 export const LEGACY_STORAGE_KEYS = [
   "latex-online-document-v2",
   "latex-online-document-v3",
