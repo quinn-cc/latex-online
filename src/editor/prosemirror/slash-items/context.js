@@ -27,11 +27,35 @@ function findAncestorNodeInfo($pos, targetType) {
 export function getTableContext(state) {
   const { selection } = state;
 
-  if (!(selection instanceof TextSelection) || !selection.empty) {
+  if (!(selection instanceof TextSelection)) {
     return null;
   }
 
-  const { $from } = selection;
+  const { $from, $to } = selection;
+
+  if (!selection.empty) {
+    const fromTable = findAncestorNodeInfo($from, editorSchema.nodes.table);
+    const toTable = findAncestorNodeInfo($to, editorSchema.nodes.table);
+    const fromRow = findAncestorNodeInfo($from, editorSchema.nodes.table_row);
+    const toRow = findAncestorNodeInfo($to, editorSchema.nodes.table_row);
+    const fromCell = findAncestorNodeInfo($from, editorSchema.nodes.table_cell);
+    const toCell = findAncestorNodeInfo($to, editorSchema.nodes.table_cell);
+
+    if (
+      !fromTable ||
+      !toTable ||
+      !fromRow ||
+      !toRow ||
+      !fromCell ||
+      !toCell ||
+      fromTable.pos !== toTable.pos ||
+      fromRow.pos !== toRow.pos ||
+      fromCell.pos !== toCell.pos
+    ) {
+      return null;
+    }
+  }
+
   let tableInfo = null;
   let rowInfo = null;
   let cellInfo = null;
@@ -172,16 +196,7 @@ export function getActiveTableItem(state) {
   const { selection } = state;
 
   if (selection.node?.type === editorSchema.nodes.table) {
-    return {
-      type: "table",
-      pos: selection.from,
-      node: selection.node,
-      settings: {
-        rowCount: selection.node.childCount,
-        columnCount: selection.node.firstChild?.childCount ?? 1,
-        tableStyle: normalizeTableStyle(selection.node.attrs.tableStyle),
-      },
-    };
+    return getTableItemAtPos(state.doc, selection.from);
   }
 
   const fromTable = findAncestorNodeInfo(selection.$from, editorSchema.nodes.table);
@@ -191,14 +206,24 @@ export function getActiveTableItem(state) {
     return null;
   }
 
+  return getTableItemAtPos(state.doc, fromTable.pos);
+}
+
+export function getTableItemAtPos(doc, tablePos) {
+  const tableNode = doc?.nodeAt?.(tablePos);
+
+  if (tableNode?.type !== editorSchema.nodes.table) {
+    return null;
+  }
+
   return {
     type: "table",
-    pos: fromTable.pos,
-    node: fromTable.node,
+    pos: tablePos,
+    node: tableNode,
     settings: {
-      rowCount: fromTable.node.childCount,
-      columnCount: fromTable.node.firstChild?.childCount ?? 1,
-      tableStyle: normalizeTableStyle(fromTable.node.attrs.tableStyle),
+      rowCount: tableNode.childCount,
+      columnCount: tableNode.firstChild?.childCount ?? 1,
+      tableStyle: normalizeTableStyle(tableNode.attrs.tableStyle),
     },
   };
 }
@@ -226,18 +251,12 @@ export function getActiveAlignItem(state, alignMathPos = null) {
 
   const { selection } = state;
 
+  if (selection.node?.type === editorSchema.nodes.align_math) {
+    return getActiveAlignItem(state, selection.from);
+  }
+
   if (selection.node?.type === editorSchema.nodes.align_block) {
-    return {
-      type: "align",
-      pos: selection.from,
-      node: selection.node,
-      settings: {
-        columnCount: normalizeAlignGroupCount(
-          selection.node.attrs.groupCount,
-          Math.ceil((selection.node.firstChild?.childCount ?? 2) / 2)
-        ),
-      },
-    };
+    return getAlignItemAtPos(state.doc, selection.from);
   }
 
   const fromAlign = findAncestorNodeInfo(selection.$from, editorSchema.nodes.align_block);
@@ -247,14 +266,24 @@ export function getActiveAlignItem(state, alignMathPos = null) {
     return null;
   }
 
+  return getAlignItemAtPos(state.doc, fromAlign.pos);
+}
+
+export function getAlignItemAtPos(doc, alignPos) {
+  const alignNode = doc?.nodeAt?.(alignPos);
+
+  if (alignNode?.type !== editorSchema.nodes.align_block) {
+    return null;
+  }
+
   return {
     type: "align",
-    pos: fromAlign.pos,
-    node: fromAlign.node,
+    pos: alignPos,
+    node: alignNode,
     settings: {
       columnCount: normalizeAlignGroupCount(
-        fromAlign.node.attrs.groupCount,
-        Math.ceil((fromAlign.node.firstChild?.childCount ?? 2) / 2)
+        alignNode.attrs.groupCount,
+        Math.ceil((alignNode.firstChild?.childCount ?? 2) / 2)
       ),
     },
   };
@@ -283,18 +312,12 @@ export function getActiveGatherItem(state, gatherMathPos = null) {
 
   const { selection } = state;
 
+  if (selection.node?.type === editorSchema.nodes.gather_math) {
+    return getActiveGatherItem(state, selection.from);
+  }
+
   if (selection.node?.type === editorSchema.nodes.gather_block) {
-    return {
-      type: "gather",
-      pos: selection.from,
-      node: selection.node,
-      settings: {
-        columnCount: normalizeGatherColumnCount(
-          selection.node.attrs.columnCount,
-          selection.node.firstChild?.childCount ?? 1
-        ),
-      },
-    };
+    return getGatherItemAtPos(state.doc, selection.from);
   }
 
   const fromGather = findAncestorNodeInfo(selection.$from, editorSchema.nodes.gather_block);
@@ -304,14 +327,24 @@ export function getActiveGatherItem(state, gatherMathPos = null) {
     return null;
   }
 
+  return getGatherItemAtPos(state.doc, fromGather.pos);
+}
+
+export function getGatherItemAtPos(doc, gatherPos) {
+  const gatherNode = doc?.nodeAt?.(gatherPos);
+
+  if (gatherNode?.type !== editorSchema.nodes.gather_block) {
+    return null;
+  }
+
   return {
     type: "gather",
-    pos: fromGather.pos,
-    node: fromGather.node,
+    pos: gatherPos,
+    node: gatherNode,
     settings: {
       columnCount: normalizeGatherColumnCount(
-        fromGather.node.attrs.columnCount,
-        fromGather.node.firstChild?.childCount ?? 1
+        gatherNode.attrs.columnCount,
+        gatherNode.firstChild?.childCount ?? 1
       ),
     },
   };

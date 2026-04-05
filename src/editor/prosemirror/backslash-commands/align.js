@@ -208,16 +208,5 @@ export function createAlignCommand(schema) {
       );
       return alignBlock;
     },
-    getSelectionTarget: ({ blockNode, blockPos }) => {
-      const firstMathNode = blockNode.firstChild?.firstChild;
-      const firstMathPos = findAlignMathPos(blockNode, blockPos, 0, 0);
-
-      return {
-        selectionPos: firstMathPos + (firstMathNode?.nodeSize ?? 1),
-        selectionBias: -1,
-        focusMathId: firstMathNode?.attrs?.id ?? null,
-        focusMathEdge: "start",
-      };
-    },
   });
 }

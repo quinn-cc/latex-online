@@ -2,7 +2,10 @@ import { Fragment } from "prosemirror-model";
 import { TextSelection } from "prosemirror-state";
 import { createBlockPositionList } from "../page-layout.js";
 import { editorSchema } from "../schema.js";
-import { getWidgetDefinitionFromNode } from "../widget-registry.js";
+import {
+  getWidgetDefinitionFromNode,
+  resolveNodeLeadingEntryTarget,
+} from "../widget-registry.js";
 
 function createParagraphNode(schema, attrs, content) {
   return content.size > 0
@@ -14,12 +17,32 @@ function isEmptyParagraphNode(node) {
   return node?.type === editorSchema.nodes.paragraph && node.content.size === 0;
 }
 
+function createSelectionTargetFromEntryTarget(target) {
+  if (target?.kind === "selection" && Number.isFinite(target.selectionPos)) {
+    return {
+      selectionPos: target.selectionPos,
+      selectionBias: target.selectionBias ?? 1,
+    };
+  }
+
+  if (target?.kind === "math" && Number.isFinite(target.selectionPos)) {
+    return {
+      selectionPos: target.selectionPos,
+      selectionBias: target.selectionBias ?? -1,
+      focusMathId: target.mathId ?? null,
+      focusMathEdge: target.edge ?? "start",
+    };
+  }
+
+  return null;
+}
+
 export function buildFullLineWidgetInsertion({
   state,
   match,
   allowedParentTypes,
   createBlockNode,
-  getSelectionTarget,
+  getSelectionTarget = null,
   schema = editorSchema,
   widgetType = null,
 }) {
@@ -57,10 +80,14 @@ export function buildFullLineWidgetInsertion({
   const blockPos = beforeParagraph
     ? match.paragraphPos + beforeParagraph.nodeSize
     : match.paragraphPos;
-  const selectionTarget = getSelectionTarget({
-    blockNode,
-    blockPos,
-  });
+  const selectionTarget = getSelectionTarget
+    ? getSelectionTarget({
+        blockNode,
+        blockPos,
+      })
+    : createSelectionTargetFromEntryTarget(
+        resolveNodeLeadingEntryTarget(blockNode, blockPos)
+      );
 
   if (!selectionTarget?.selectionPos) {
     return null;

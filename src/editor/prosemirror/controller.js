@@ -20,11 +20,7 @@ import {
   getBackslashCommandSuggestions,
   getExecutableBackslashCommandMatch,
 } from "./backslash-commands/index.js";
-import {
-  InlineMathNodeView,
-  AlignMathNodeView,
-  GatherMathNodeView,
-} from "./math-node-view.js";
+import { MathNodeView } from "./math-node-view.js";
 import { editorSchema } from "./schema.js";
 import { createEmptyDocument } from "./document.js";
 import { createMathTriggerPlugin } from "./math-trigger-plugin.js";
@@ -58,6 +54,7 @@ import {
 } from "./page-layout.js";
 import {
   getActiveSlashItemState as getRegisteredSlashItemState,
+  resolveSlashItemState as resolveRegisteredSlashItemState,
 } from "./slash-items/index.js";
 import {
   applyMathAttrs,
@@ -75,6 +72,10 @@ import {
   isSelectionInEmptyListItem,
   setStoredMarksFromToolbarState,
 } from "./state-helpers.js";
+import {
+  findEnclosingWidgetInfoAtPos,
+  findEnclosingWidgetInfoForSelection,
+} from "./widget-registry.js";
 import { widgetActionMethods } from "./widget-actions.js";
 
 let mathIdCounter = 0;
@@ -82,6 +83,20 @@ let mathIdCounter = 0;
 function createMathId() {
   mathIdCounter += 1;
   return `math-${Date.now().toString(36)}-${mathIdCounter.toString(36)}`;
+}
+
+function createWidgetFocusState(widgetInfo) {
+  const type = widgetInfo?.definition?.type ?? null;
+  const pos = widgetInfo?.pos ?? null;
+
+  if (!type || !Number.isFinite(pos)) {
+    return null;
+  }
+
+  return {
+    type,
+    pos,
+  };
 }
 
 function describeDomNode(node) {
@@ -207,22 +222,6 @@ export class PaperEditorController {
     this.mathSession.lastFocusedMathId = value;
   }
 
-  get boundaryMathCaptureId() {
-    return this.mathSession.boundaryMathCaptureId;
-  }
-
-  set boundaryMathCaptureId(value) {
-    this.mathSession.boundaryMathCaptureId = value;
-  }
-
-  get boundaryMathCaptureDirection() {
-    return this.mathSession.boundaryMathCaptureDirection;
-  }
-
-  set boundaryMathCaptureDirection(value) {
-    this.mathSession.boundaryMathCaptureDirection = value;
-  }
-
   get pendingMathFocusId() {
     return this.mathSession.pendingMathFocusId;
   }
@@ -237,6 +236,22 @@ export class PaperEditorController {
 
   set pendingMathFocusEdge(value) {
     this.mathSession.pendingMathFocusEdge = value;
+  }
+
+  get pendingMathFocusOffset() {
+    return this.mathSession.pendingMathFocusOffset;
+  }
+
+  set pendingMathFocusOffset(value) {
+    this.mathSession.pendingMathFocusOffset = value;
+  }
+
+  get pendingMathFocusSelectionMode() {
+    return this.mathSession.pendingMathFocusSelectionMode;
+  }
+
+  set pendingMathFocusSelectionMode(value) {
+    this.mathSession.pendingMathFocusSelectionMode = value;
   }
 
   get pendingMathFocusFrame() {
@@ -281,6 +296,14 @@ export class PaperEditorController {
       getMathView: (id) => this.mathViews.get(id) ?? null,
       debug: (type, detail) => this.debugLog(type, detail),
     });
+    this.widgetFocusState = null;
+    this.pendingWidgetFocusState = null;
+    this.pendingWidgetFocusStateFrame = 0;
+    this.widgetFocusSyncFrame = 0;
+    this.activeWidgetFocusDom = null;
+    this.slashItemState = null;
+    this.pendingSlashItemState = null;
+    this.pendingSlashItemStateFrame = 0;
     this.pendingRepaginationFrame = 0;
     this.preservedTextSelection = null;
     this.currentMathStyle = createDefaultMathStyle();
@@ -298,78 +321,7 @@ export class PaperEditorController {
     this.view = new EditorView(this.mount, {
       state,
       dispatchTransaction: (tr) => this.dispatchTransaction(tr),
-      nodeViews: {
-        inline_math: (node, view, getPos) =>
-          new InlineMathNodeView(node, view, getPos, {
-            MathfieldElementClass: this.MathfieldElementClass,
-            commitMathNode: (pos, patch) => this.commitMathNode(pos, patch),
-            commitAndExitMathNode: (pos, direction, patch) =>
-              this.commitAndExitMathNode(pos, direction, patch),
-            exitMathNode: (pos, direction) => this.exitMathNode(pos, direction),
-            handleMathBlur: (id, pos) => this.handleMathBlur(id, pos),
-            handleMathFocus: (id, pos) => this.handleMathFocus(id, pos),
-            handleBackslashMenuKey: (event, source) =>
-              this.handleBackslashMenuKey(event, source),
-            handleBackslashMenuChange: () => this.emitBackslashMenuState(),
-            handleMathStructureChange: () => this.emitSlashItemState(),
-            registerMathView: (id, nodeView) => this.registerMathView(id, nodeView),
-            removeMathNode: (pos, direction) => this.removeMathNode(pos, direction),
-            selectMathNode: (pos) => this.selectMathNode(pos),
-            shouldDebugLog: (type) => this.shouldDebugLog(type),
-            unregisterMathView: (id, nodeView) => this.unregisterMathView(id, nodeView),
-            debug: (type, detail) => this.debugLog(type, detail),
-          }),
-        align_math: (node, view, getPos) =>
-          new AlignMathNodeView(node, view, getPos, {
-            MathfieldElementClass: this.MathfieldElementClass,
-            commitMathNode: (pos, patch) => this.commitMathNode(pos, patch),
-            commitAndExitMathNode: (pos, direction, patch) =>
-              this.commitAndExitMathNode(pos, direction, patch),
-            exitMathNode: (pos, direction) => this.exitMathNode(pos, direction),
-            handleMathBlur: (id, pos) => this.handleMathBlur(id, pos),
-            handleMathFocus: (id, pos) => this.handleMathFocus(id, pos),
-            handleBackslashMenuKey: (event, source) =>
-              this.handleBackslashMenuKey(event, source),
-            handleBackslashMenuChange: () => this.emitBackslashMenuState(),
-            handleMathStructureChange: () => this.emitSlashItemState(),
-            handleGridTab: (pos, direction, patch) =>
-              this.handleMathGridTab(pos, direction, patch),
-            handleAlignEnter: (pos, patch) => this.handleAlignEnterFromMath(pos, patch),
-            handleAlignShiftEnter: (pos, patch) =>
-              this.insertAlignRowBelowFromMath(pos, patch),
-            registerMathView: (id, nodeView) => this.registerMathView(id, nodeView),
-            removeMathNode: (pos, direction) => this.removeMathNode(pos, direction),
-            selectMathNode: (pos) => this.selectMathNode(pos),
-            shouldDebugLog: (type) => this.shouldDebugLog(type),
-            unregisterMathView: (id, nodeView) => this.unregisterMathView(id, nodeView),
-            debug: (type, detail) => this.debugLog(type, detail),
-          }),
-        gather_math: (node, view, getPos) =>
-          new GatherMathNodeView(node, view, getPos, {
-            MathfieldElementClass: this.MathfieldElementClass,
-            commitMathNode: (pos, patch) => this.commitMathNode(pos, patch),
-            commitAndExitMathNode: (pos, direction, patch) =>
-              this.commitAndExitMathNode(pos, direction, patch),
-            exitMathNode: (pos, direction) => this.exitMathNode(pos, direction),
-            handleMathBlur: (id, pos) => this.handleMathBlur(id, pos),
-            handleMathFocus: (id, pos) => this.handleMathFocus(id, pos),
-            handleBackslashMenuKey: (event, source) =>
-              this.handleBackslashMenuKey(event, source),
-            handleBackslashMenuChange: () => this.emitBackslashMenuState(),
-            handleMathStructureChange: () => this.emitSlashItemState(),
-            handleGridTab: (pos, direction, patch) =>
-              this.handleMathGridTab(pos, direction, patch),
-            handleGatherEnter: (pos, patch) => this.handleGatherEnterFromMath(pos, patch),
-            handleGatherShiftEnter: (pos, patch) =>
-              this.insertGatherRowBelowFromMath(pos, patch),
-            registerMathView: (id, nodeView) => this.registerMathView(id, nodeView),
-            removeMathNode: (pos, direction) => this.removeMathNode(pos, direction),
-            selectMathNode: (pos) => this.selectMathNode(pos),
-            shouldDebugLog: (type) => this.shouldDebugLog(type),
-            unregisterMathView: (id, nodeView) => this.unregisterMathView(id, nodeView),
-            debug: (type, detail) => this.debugLog(type, detail),
-          }),
-      },
+      nodeViews: this.createMathNodeViews(),
       handleKeyDown: (_view, event) => this.handleEditorKeyDown(event),
       handleTextInput: (_view, from, to, text) => this.handleTextInput(from, to, text),
       attributes: {
@@ -430,8 +382,70 @@ export class PaperEditorController {
     ];
   }
 
+  createSharedMathOptions() {
+    return {
+      MathfieldElementClass: this.MathfieldElementClass,
+      commitMathNode: (pos, patch) => this.commitMathNode(pos, patch),
+      commitAndExitMathNode: (pos, direction, patch) =>
+        this.commitAndExitMathNode(pos, direction, patch),
+      exitMathNode: (pos, direction) => this.exitMathNode(pos, direction),
+      handleMathBlur: (id, pos) => this.handleMathBlur(id, pos),
+      handleBackspaceAtStart: (pos) => this.removeLeadingWidgetFromContentPos(pos),
+      handleMathFocus: (id, pos) => this.handleMathFocus(id, pos),
+      handleBackslashMenuKey: (event, source) =>
+        this.handleBackslashMenuKey(event, source),
+      handleBackslashMenuChange: () => this.emitBackslashMenuState(),
+      handleMathStructureChange: () => this.emitSlashItemState(),
+      scheduleWidgetFocusSync: () => this.scheduleWidgetFocusSync(),
+      hasActiveMathFocusForId: (id) => this.activeMathId === id,
+      getPendingMathFocusId: () => this.pendingMathFocusId,
+      hasPendingMathFocusForId: (id) => this.pendingMathFocusId === id,
+      applyWidgetEntryTarget: (target, options = {}) =>
+        this.applyWidgetEntryTarget(target, options),
+      registerMathView: (id, nodeView) => this.registerMathView(id, nodeView),
+      removeMathNode: (pos, direction) => this.removeMathNode(pos, direction),
+      resolvePointerEntryTargetAtPos: (pos, pointer) =>
+        this.resolvePointerEntryTargetAtPos(pos, pointer),
+      resolveMathPositionById: (id) => this.findMathPositionById(id),
+      selectMathNode: (pos) => this.selectMathNode(pos),
+      shouldDebugLog: (type) => this.shouldDebugLog(type),
+      unregisterMathView: (id, nodeView) => this.unregisterMathView(id, nodeView),
+      debug: (type, detail) => this.debugLog(type, detail),
+    };
+  }
+
+  createMathNodeViews() {
+    const shared = this.createSharedMathOptions();
+    return {
+      inline_math: (node, view, getPos) =>
+        new MathNodeView(node, view, getPos, shared, "inline"),
+      align_math: (node, view, getPos) =>
+        new MathNodeView(node, view, getPos, {
+          ...shared,
+          handleGridTab: (pos, direction, patch) =>
+            this.handleMathGridTab(pos, direction, patch),
+          handleAlignEnter: (pos, patch) => this.handleAlignEnterFromMath(pos, patch),
+          handleAlignShiftEnter: (pos, patch) =>
+            this.insertAlignRowBelowFromMath(pos, patch),
+        }, "align"),
+      gather_math: (node, view, getPos) =>
+        new MathNodeView(node, view, getPos, {
+          ...shared,
+          handleGridTab: (pos, direction, patch) =>
+            this.handleMathGridTab(pos, direction, patch),
+          handleGatherEnter: (pos, patch) => this.handleGatherEnterFromMath(pos, patch),
+          handleGatherShiftEnter: (pos, patch) =>
+            this.insertGatherRowBelowFromMath(pos, patch),
+        }, "gather"),
+    };
+  }
+
   destroy() {
     this.cancelPendingMathFocus();
+    this.clearPendingWidgetFocusState();
+    this.clearWidgetFocusSyncFrame();
+    this.clearPendingSlashItemState();
+    this.clearAppliedWidgetFocusDom();
     this.cancelPendingRepagination();
     this.resizeObserver?.disconnect();
     this.debugLog("controller.destroy");
@@ -464,6 +478,12 @@ export class PaperEditorController {
       editorSchema
     );
     this.mathSession.reset();
+    this.clearPendingWidgetFocusState();
+    this.clearWidgetFocusSyncFrame();
+    this.clearAppliedWidgetFocusDom();
+    this.widgetFocusState = null;
+    this.clearPendingSlashItemState();
+    this.slashItemState = null;
     this.preservedTextSelection = null;
     const tr = this.view.state.tr.replaceWith(
       0,
@@ -622,7 +642,8 @@ export class PaperEditorController {
       return false;
     }
 
-    return this.deletePreviousWidgetBlock();
+    return this.removeAdjacentWidget("backward") ||
+      this.removeLeadingWidgetFromSelection();
   }
 
   getFallbackExecutableBackslashCommandMatch() {
@@ -964,6 +985,260 @@ export class PaperEditorController {
     return getRegisteredSlashItemState(this);
   }
 
+  getActiveWidgetFocusState() {
+    const slashItem = this.getActiveSlashItemState();
+
+    if (Number.isFinite(slashItem?.pos)) {
+      const slashItemWidgetInfo = findEnclosingWidgetInfoAtPos(
+        this.view.state.doc,
+        slashItem.pos
+      );
+
+      if (slashItemWidgetInfo) {
+        return createWidgetFocusState(slashItemWidgetInfo);
+      }
+    }
+
+    const mathTarget = this.getFocusedOrPendingMathTarget();
+
+    if (mathTarget) {
+      return createWidgetFocusState(
+        findEnclosingWidgetInfoAtPos(this.view.state.doc, mathTarget.pos)
+      );
+    }
+
+    if (!this.view?.hasFocus?.()) {
+      return null;
+    }
+
+    return createWidgetFocusState(
+      findEnclosingWidgetInfoForSelection(this.view.state.selection)
+    );
+  }
+
+  resolveWidgetFocusState(item) {
+    if (!item?.type || !Number.isFinite(item.pos)) {
+      return null;
+    }
+
+    const widgetInfo = findEnclosingWidgetInfoAtPos(this.view.state.doc, item.pos);
+    const resolvedState = createWidgetFocusState(widgetInfo);
+
+    return resolvedState?.type === item.type ? resolvedState : null;
+  }
+
+  clearPendingWidgetFocusStateFrame() {
+    if (!this.pendingWidgetFocusStateFrame) {
+      return;
+    }
+
+    cancelAnimationFrame(this.pendingWidgetFocusStateFrame);
+    this.pendingWidgetFocusStateFrame = 0;
+  }
+
+  clearPendingWidgetFocusState() {
+    this.clearPendingWidgetFocusStateFrame();
+    this.pendingWidgetFocusState = null;
+  }
+
+  clearWidgetFocusSyncFrame() {
+    if (!this.widgetFocusSyncFrame) {
+      return;
+    }
+
+    cancelAnimationFrame(this.widgetFocusSyncFrame);
+    this.widgetFocusSyncFrame = 0;
+  }
+
+  clearAppliedWidgetFocusDom() {
+    if (!this.activeWidgetFocusDom) {
+      return;
+    }
+
+    this.activeWidgetFocusDom.classList.remove("is-widget-active");
+    this.activeWidgetFocusDom = null;
+  }
+
+  getWidgetFocusDom(item) {
+    if (!item || !Number.isFinite(item.pos)) {
+      return null;
+    }
+
+    const widgetInfo = findEnclosingWidgetInfoAtPos(this.view.state.doc, item.pos);
+    const customDom = widgetInfo?.definition?.resolveFocusDom?.({
+      controller: this,
+      item,
+      widgetInfo,
+    });
+
+    if (customDom instanceof HTMLElement) {
+      return customDom;
+    }
+
+    const nodeDom = this.view?.nodeDOM?.(item.pos);
+    return nodeDom instanceof HTMLElement ? nodeDom : null;
+  }
+
+  getStableWidgetFocusState(item = this.getActiveWidgetFocusState()) {
+    const resolvedActiveItem = item
+      ? this.resolveWidgetFocusState(item) ?? item
+      : null;
+
+    if (resolvedActiveItem) {
+      this.widgetFocusState = resolvedActiveItem;
+      return resolvedActiveItem;
+    }
+
+    const resolvedPendingItem = this.pendingWidgetFocusState
+      ? this.resolveWidgetFocusState(this.pendingWidgetFocusState)
+        ?? this.pendingWidgetFocusState
+      : null;
+
+    if (resolvedPendingItem) {
+      this.widgetFocusState = resolvedPendingItem;
+      return resolvedPendingItem;
+    }
+
+    this.widgetFocusState = null;
+    return null;
+  }
+
+  beginWidgetFocusHandoff(item = null) {
+    const baseItem = item
+      ? this.resolveWidgetFocusState(item) ?? item
+      : this.widgetFocusState ?? this.getStableWidgetFocusState();
+
+    if (!baseItem) {
+      return;
+    }
+
+    this.pendingWidgetFocusState = baseItem;
+    this.clearPendingWidgetFocusStateFrame();
+
+    const settle = () => {
+      this.pendingWidgetFocusStateFrame = 0;
+
+      if (this.getActiveWidgetFocusState()) {
+        this.emitUiState();
+        return;
+      }
+
+      if (this.hasPendingMathFocus()) {
+        this.pendingWidgetFocusStateFrame = requestAnimationFrame(settle);
+        return;
+      }
+
+      this.pendingWidgetFocusState = null;
+      this.emitUiState();
+    };
+
+    this.pendingWidgetFocusStateFrame = requestAnimationFrame(settle);
+  }
+
+  syncWidgetFocusState() {
+    const nextItem = this.getStableWidgetFocusState();
+    const nextDom = this.getWidgetFocusDom(nextItem);
+
+    if (this.pendingWidgetFocusState && this.activeWidgetFocusDom && !nextDom) {
+      return;
+    }
+
+    if (this.activeWidgetFocusDom && this.activeWidgetFocusDom !== nextDom) {
+      this.activeWidgetFocusDom.classList.remove("is-widget-active");
+    }
+
+    if (nextDom) {
+      nextDom.classList.add("is-widget-active");
+    }
+
+    this.activeWidgetFocusDom = nextDom;
+  }
+
+  scheduleWidgetFocusSync() {
+    if (this.widgetFocusSyncFrame) {
+      return;
+    }
+
+    this.widgetFocusSyncFrame = requestAnimationFrame(() => {
+      this.widgetFocusSyncFrame = 0;
+      this.syncWidgetFocusState();
+    });
+  }
+
+  getStableSlashItemState(item = this.getActiveSlashItemState()) {
+    const resolvedActiveItem = item
+      ? this.resolveSlashItemState(item) ?? item
+      : null;
+
+    if (resolvedActiveItem) {
+      this.slashItemState = resolvedActiveItem;
+      this.clearPendingSlashItemState();
+      return resolvedActiveItem;
+    }
+
+    const resolvedPendingItem = this.pendingSlashItemState
+      ? this.resolveSlashItemState(this.pendingSlashItemState) ?? this.pendingSlashItemState
+      : null;
+
+    if (resolvedPendingItem) {
+      this.slashItemState = resolvedPendingItem;
+      return resolvedPendingItem;
+    }
+
+    this.slashItemState = null;
+    return null;
+  }
+
+  resolveSlashItemState(item) {
+    return resolveRegisteredSlashItemState(this, item);
+  }
+
+  clearPendingSlashItemStateFrame() {
+    if (!this.pendingSlashItemStateFrame) {
+      return;
+    }
+
+    cancelAnimationFrame(this.pendingSlashItemStateFrame);
+    this.pendingSlashItemStateFrame = 0;
+  }
+
+  clearPendingSlashItemState() {
+    this.clearPendingSlashItemStateFrame();
+    this.pendingSlashItemState = null;
+  }
+
+  beginSlashItemStateHandoff(item = null) {
+    const baseItem = item
+      ? this.resolveSlashItemState(item) ?? item
+      : this.slashItemState ?? this.getStableSlashItemState();
+
+    if (!baseItem) {
+      return;
+    }
+
+    this.pendingSlashItemState = baseItem;
+    this.clearPendingSlashItemStateFrame();
+
+    const settle = () => {
+      this.pendingSlashItemStateFrame = 0;
+
+      if (this.getActiveSlashItemState()) {
+        this.emitSlashItemState();
+        return;
+      }
+
+      if (this.hasPendingMathFocus()) {
+        this.pendingSlashItemStateFrame = requestAnimationFrame(settle);
+        return;
+      }
+
+      this.pendingSlashItemState = null;
+      this.emitSlashItemState();
+    };
+
+    this.pendingSlashItemStateFrame = requestAnimationFrame(settle);
+  }
+
   getSlashItemClientRect(itemOrPos) {
     if (
       itemOrPos &&
@@ -1009,6 +1284,24 @@ export class PaperEditorController {
 
     const mathView = item.mathId ? this.getMathView(item.mathId) : null;
     return mathView?.updateMathArraySettings?.(item, settings) ?? false;
+  }
+
+  canDeleteMathStructureItem(item) {
+    if (item?.source !== "math-structure") {
+      return false;
+    }
+
+    const mathView = item.mathId ? this.getMathView(item.mathId) : null;
+    return mathView?.canDeleteMathStructureItem?.(item) ?? false;
+  }
+
+  deleteMathStructureItem(item) {
+    if (item?.source !== "math-structure") {
+      return false;
+    }
+
+    const mathView = item.mathId ? this.getMathView(item.mathId) : null;
+    return mathView?.deleteMathStructureItem?.(item) ?? false;
   }
 
   createMathNodeAttrsForState(state, initialLatex = "") {
@@ -1478,19 +1771,14 @@ export class PaperEditorController {
       return false;
     }
 
-    const target = this.getAdjacentMathTarget(direction);
-
-    if (!target) {
-      return false;
-    }
-
-    this.lastFocusedMathId = target.id;
-    this.focusMathNode(target.id, direction === "left" ? "end" : "start");
-    this.emitUiState();
-    return true;
+    return this.enterAdjacentWidget(direction === "left" ? "backward" : "forward");
   }
 
   commitMathNode(pos, patch) {
+    if (!Number.isFinite(pos)) {
+      return false;
+    }
+
     const node = this.view.state.doc.nodeAt(pos);
 
     if (!isMathNode(node)) {
@@ -1552,6 +1840,10 @@ export class PaperEditorController {
   }
 
   selectMathNode(pos) {
+    if (!Number.isFinite(pos)) {
+      return false;
+    }
+
     const node = this.view.state.doc.nodeAt(pos);
 
     if (!isMathNode(node)) {
@@ -1568,14 +1860,14 @@ export class PaperEditorController {
   }
 
   removeMathNode(pos, direction) {
+    if (!Number.isFinite(pos)) {
+      return false;
+    }
+
     const node = this.view.state.doc.nodeAt(pos);
 
     if (!isMathNode(node)) {
       return false;
-    }
-
-    if (node.attrs.id && this.boundaryMathCaptureId === node.attrs.id) {
-      this.clearBoundaryMathCapture();
     }
 
     if (node.type === editorSchema.nodes.align_math) {
@@ -1591,7 +1883,10 @@ export class PaperEditorController {
     }
 
     if (node.type === editorSchema.nodes.inline_math) {
-      return this.deleteInlineMathAt(pos, direction, {
+      return this.deleteWidgetAt(pos, {
+        trigger: "math-remove",
+        direction,
+        debugType: "controller.removeMathNode.inline",
         debugDetail: {
           requestedBy: "controller.removeMathNode",
         },
@@ -1606,6 +1901,10 @@ export class PaperEditorController {
   }
 
   commitAndExitMathNode(pos, direction, patch = null) {
+    if (!Number.isFinite(pos)) {
+      return false;
+    }
+
     const node = this.view.state.doc.nodeAt(pos);
 
     if (!isMathNode(node)) {
@@ -1645,7 +1944,6 @@ export class PaperEditorController {
       to: tr.selection.to,
     };
     this.activeMathId = null;
-    this.clearBoundaryMathCapture();
     this.cancelPendingMathFocus();
     this.debugLog("controller.commitAndExitMathNode", {
       pos,
@@ -1685,8 +1983,8 @@ export class PaperEditorController {
     this.updateDebugState("controller.handleMathFocus");
   }
 
-  handleMathBlur(id, pos, options = {}) {
-    this.mathSession.handleBlur(id, options);
+  handleMathBlur(id, pos) {
+    this.mathSession.handleBlur(id);
 
     const node = this.view.state.doc.nodeAt(pos);
 
@@ -1723,16 +2021,15 @@ export class PaperEditorController {
     });
 
     if (this.pendingMathFocusId === id) {
-      this.scheduleMathFocus(id, this.pendingMathFocusEdge);
+      this.scheduleMathFocus(id, this.pendingMathFocusEdge, {
+        offset: this.pendingMathFocusOffset,
+        selectionMode: this.pendingMathFocusSelectionMode,
+      });
     }
   }
 
   getMathView(id) {
     return this.mathViews.get(id) ?? null;
-  }
-
-  clearBoundaryMathCapture() {
-    this.mathSession.clearBoundaryCapture();
   }
 
   unregisterMathView(id, nodeView) {
@@ -2062,8 +2359,20 @@ export class PaperEditorController {
     return this.mathSession.getFocusedOrPendingTarget();
   }
 
-  getBoundaryMathTarget() {
-    return this.mathSession.getBoundaryTarget();
+  getActiveMathTarget() {
+    return this.activeMathId ? this.resolveMathTargetById(this.activeMathId) : null;
+  }
+
+  getSettingsMathTarget() {
+    const target = this.getFocusedOrPendingMathTarget();
+
+    if (!target) {
+      return null;
+    }
+
+    const nodeView = this.getMathView(target.id);
+
+    return nodeView?.hasSettingsInteractionFocus?.() === true ? target : null;
   }
 
   getParagraphCommandRange() {
@@ -2143,8 +2452,12 @@ export class PaperEditorController {
     };
   }
 
-  focusMathNode(id, edge) {
-    return this.mathSession.focusNode(id, edge);
+  focusMathNode(id, edge, options = {}) {
+    return this.mathSession.focusNode(id, edge, options);
+  }
+
+  prepareMathFocusHandoff(id, edge, options = {}) {
+    return this.mathSession.prepareFocus(id, edge, options);
   }
 
   cancelPendingMathFocus() {
@@ -2155,8 +2468,8 @@ export class PaperEditorController {
     this.mathSession.cancelPendingFocusFrame();
   }
 
-  scheduleMathFocus(id, edge) {
-    this.mathSession.scheduleFocus(id, edge);
+  scheduleMathFocus(id, edge, options = {}) {
+    this.mathSession.scheduleFocus(id, edge, options);
   }
 
   buildInlineMathInsertionTransaction(state, from, to, initialLatex = "") {
@@ -2259,9 +2572,7 @@ export class PaperEditorController {
 
   prepareMathInsertion(nodeId, textToolbarState, edge = "start") {
     this.cancelPendingMathFocus();
-    this.clearBoundaryMathCapture();
-    this.pendingMathFocusId = nodeId;
-    this.pendingMathFocusEdge = edge;
+    this.prepareMathFocusHandoff(nodeId, edge);
     this.lastFocusedMathId = nodeId;
     this.preservedTextSelection = null;
     this.lastTextContext = createLastTextContext(textToolbarState, editorSchema);
@@ -2465,6 +2776,7 @@ export class PaperEditorController {
       lastFocusedMathId: this.lastFocusedMathId,
       pendingMathFocusId: this.pendingMathFocusId,
       pendingMathFocusEdge: this.pendingMathFocusEdge,
+      pendingMathFocusOffset: this.pendingMathFocusOffset,
       hasMathCapture: this.hasMathCapture(),
       pageCount: this.pageCount,
       preservedTextSelection: this.preservedTextSelection,
@@ -2513,6 +2825,8 @@ export class PaperEditorController {
   }
 
   emitUiState() {
+    this.syncWidgetFocusState();
+    this.scheduleWidgetFocusSync();
     const mathTarget = this.getMathTarget();
     const activeMathView = mathTarget
       ? this.mathViews.get(mathTarget.id)
@@ -2541,7 +2855,9 @@ export class PaperEditorController {
   }
 
   emitSlashItemState() {
-    this.onSlashItemStateChange?.(this.getActiveSlashItemState());
+    this.syncWidgetFocusState();
+    this.scheduleWidgetFocusSync();
+    this.onSlashItemStateChange?.(this.getStableSlashItemState());
   }
 }
 

@@ -30,6 +30,22 @@
         });
       }
 
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function markStep(step, detail = null) {
+        document.body.dataset.step = step;
+
+        if (detail == null) {
+          delete document.body.dataset.stepDetail;
+          return;
+        }
+
+        document.body.dataset.stepDetail =
+          typeof detail === "string" ? detail : JSON.stringify(detail);
+      }
+
       async function withController(run) {
         const iframe = document.createElement("iframe");
         iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
@@ -41,296 +57,329 @@
           () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
         );
 
-        return run(iframe.contentWindow.__latexOnlineDebug.controller);
+        const controller = iframe.contentWindow.__latexOnlineDebug.controller;
+        controller.clear();
+        await sleep(80);
+        return run(controller, iframe.contentWindow);
       }
 
-      async function dispatchTab(controller, isShift = false) {
-        const target = controller.getFocusedOrPendingMathTarget();
-        const mathView = target ? controller.getMathView(target.id) : null;
+      function insertCommand(controller, commandName) {
+        controller.view.focus();
+        controller.dispatchTransaction(
+          controller.view.state.tr.insertText(`\\${commandName}`)
+        );
 
-        if (!mathView) {
-          return false;
+        if (!controller.executeBackslashCommandAtSelection()) {
+          throw new Error(`Expected \\\\${commandName} command to execute`);
         }
-
-        mathView.mathField.dispatchEvent(
-          new KeyboardEvent("keydown", {
-            key: "Tab",
-            shiftKey: isShift,
-            bubbles: true,
-            cancelable: true,
-          })
-        );
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        return true;
       }
 
-      async function dispatchImmediateTab(controller, isShift = false) {
-        const activeElement =
-          controller.view.dom.ownerDocument.activeElement ?? controller.view.dom;
-
-        activeElement.dispatchEvent(
-          new KeyboardEvent("keydown", {
-            key: "Tab",
-            shiftKey: isShift,
-            bubbles: true,
-            cancelable: true,
-          })
-        );
-        await new Promise((resolve) => setTimeout(resolve, 60));
-      }
-
-      async function waitForMathView(controller) {
+      async function dispatchMathTab(controller, contentWindow, isShift = false) {
         const target = await waitFor(() => controller.getFocusedOrPendingMathTarget());
         const mathView = await waitFor(() => controller.getMathView(target.id));
-        return { target, mathView };
+
+        mathView.mathField.dispatchEvent(
+          new contentWindow.KeyboardEvent("keydown", {
+            key: "Tab",
+            shiftKey: isShift,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        await sleep(80);
       }
 
-      function getActiveTargetSnapshot(controller) {
+      async function dispatchEditorKey(controller, contentWindow, key, options = {}) {
+        controller.view.focus();
+        controller.view.dom.dispatchEvent(
+          new contentWindow.KeyboardEvent("keydown", {
+            key,
+            bubbles: true,
+            cancelable: true,
+            ...options,
+          })
+        );
+        await sleep(80);
+      }
+
+      function getMathSelectionSnapshot(controller) {
         const target = controller.getFocusedOrPendingMathTarget();
-        return target
-          ? {
-              id: target.id,
-              pos: target.pos,
-              type: target.node.type.name,
+        const mathView = target ? controller.getMathView(target.id) : null;
+        const selection = mathView?.mathField?.selection ?? null;
+
+        return {
+          id: target?.id ?? null,
+          pos: target?.pos ?? null,
+          type: target?.node?.type?.name ?? null,
+          isCollapsed: mathView?.mathField?.selectionIsCollapsed ?? null,
+          position: mathView?.mathField?.position ?? null,
+          lastOffset: mathView?.mathField?.lastOffset ?? null,
+          selection: selection
+            ? {
+                ranges: selection.ranges ?? null,
+                direction: selection.direction ?? null,
+              }
+            : null,
+        };
+      }
+
+      function getTableSelectionIndices(selection, schema) {
+        let rowIndex = null;
+        let cellIndex = null;
+
+        for (let depth = selection.$from.depth; depth >= 0; depth -= 1) {
+          const node = selection.$from.node(depth);
+
+          if (cellIndex == null && node.type === schema.nodes.table_row) {
+            cellIndex = selection.$from.index(depth);
+            continue;
+          }
+
+          if (rowIndex == null && node.type === schema.nodes.table) {
+            rowIndex = selection.$from.index(depth);
+            break;
+          }
+        }
+
+        return {
+          rowIndex,
+          cellIndex,
+        };
+      }
+
+      function getTableSelectionSnapshot(controller) {
+        const selection = controller.view.state.selection;
+        const indices = getTableSelectionIndices(selection, controller.view.state.schema);
+
+        return {
+          from: selection.from,
+          to: selection.to,
+          empty: selection.empty,
+          parentType: selection.$from.parent.type.name,
+          text: controller.view.state.doc.textBetween(selection.from, selection.to, "", ""),
+          rowIndex: indices.rowIndex,
+          cellIndex: indices.cellIndex,
+        };
+      }
+
+      async function runAlignTabScenario() {
+        return withController(async (controller, contentWindow) => {
+          markStep("align.insert");
+          insertCommand(controller, "align");
+
+          markStep("align.waitFirstTarget");
+          const firstTarget = await waitFor(() =>
+            controller.getFocusedOrPendingMathTarget()
+          );
+          markStep("align.commitFirst", firstTarget);
+          controller.commitMathNode(firstTarget.pos, { latex: "x" });
+          markStep("align.waitFirstCommit");
+          await waitFor(
+            () => controller.view.state.doc.nodeAt(firstTarget.pos)?.attrs?.latex === "x"
+          );
+
+          markStep("align.moveSecond");
+          if (!controller.moveToAlignCellFromMath(firstTarget.pos, 0, 1, null, {
+            entryMode: "collapse",
+            focusEdge: "start",
+          })) {
+            throw new Error("Expected to move from the first align cell to the second");
+          }
+
+          markStep("align.waitSecondTarget");
+          const secondTarget = await waitFor(() => {
+            const target = controller.getFocusedOrPendingMathTarget();
+            return target && target.pos !== firstTarget.pos ? target : null;
+          });
+          markStep("align.commitSecond", secondTarget);
+          controller.commitMathNode(secondTarget.pos, { latex: "y" });
+          markStep("align.waitSecondCommit");
+          await waitFor(
+            () => controller.view.state.doc.nodeAt(secondTarget.pos)?.attrs?.latex === "y"
+          );
+
+          markStep("align.moveFirst");
+          if (!controller.moveToAlignCellFromMath(secondTarget.pos, 0, 0, null, {
+            entryMode: "collapse",
+            focusEdge: "start",
+          })) {
+            throw new Error("Expected to move back to the first align cell");
+          }
+
+          markStep("align.waitReturnFirst");
+          await waitFor(() => {
+            const target = controller.getFocusedOrPendingMathTarget();
+            return target && target.pos === firstTarget.pos;
+          });
+
+          markStep("align.tabForward");
+          await dispatchMathTab(controller, contentWindow, false);
+          markStep("align.waitForwardSelection");
+          const forward = await waitFor(() => {
+            const snapshot = getMathSelectionSnapshot(controller);
+            return (
+              snapshot.pos === secondTarget.pos &&
+              snapshot.isCollapsed === false &&
+              snapshot.selection?.direction === "forward"
+            )
+              ? snapshot
+              : null;
+          });
+
+          markStep("align.tabBackward");
+          await dispatchMathTab(controller, contentWindow, true);
+          markStep("align.waitBackwardSelection");
+          const backward = await waitFor(() => {
+            const snapshot = getMathSelectionSnapshot(controller);
+            return (
+              snapshot.pos === firstTarget.pos &&
+              snapshot.isCollapsed === false &&
+              snapshot.selection?.direction === "forward"
+            )
+              ? snapshot
+              : null;
+          });
+
+          if (forward.isCollapsed || forward.selection?.direction !== "forward") {
+            throw new Error(`Expected forward Tab to select the destination align cell: ${JSON.stringify(forward)}`);
+          }
+
+          if (backward.isCollapsed || backward.selection?.direction !== "forward") {
+            throw new Error(`Expected backward Tab to select the previous align cell: ${JSON.stringify(backward)}`);
+          }
+
+          return {
+            forward,
+            backward,
+          };
+        });
+      }
+
+      async function runTableTabScenario() {
+        return withController(async (controller, contentWindow) => {
+          markStep("table.insert");
+          insertCommand(controller, "table");
+
+          markStep("table.insertFirst");
+          controller.dispatchTransaction(controller.view.state.tr.insertText("x"));
+
+          markStep("table.moveSecond");
+          if (!controller.moveToNextTableCellOrExit()) {
+            throw new Error("Expected to move from the first table cell to the second");
+          }
+
+          markStep("table.insertSecond");
+          controller.dispatchTransaction(controller.view.state.tr.insertText("y"));
+
+          markStep("table.moveFirst");
+          if (!controller.moveToPreviousTableCellOrExit()) {
+            throw new Error("Expected to move back to the first table cell");
+          }
+
+          const beforeForward = getTableSelectionSnapshot(controller);
+
+          markStep("table.tabForward", beforeForward);
+          await dispatchEditorKey(controller, contentWindow, "Tab");
+          const forward = getTableSelectionSnapshot(controller);
+
+          markStep("table.tabBackward", forward);
+          await dispatchEditorKey(controller, contentWindow, "Tab", {
+            shiftKey: true,
+          });
+          const backward = getTableSelectionSnapshot(controller);
+
+          if (
+            beforeForward.empty ||
+            beforeForward.text !== "x" ||
+            beforeForward.rowIndex !== 0 ||
+            beforeForward.cellIndex !== 0
+          ) {
+            throw new Error(`Expected previous-cell entry to select first table cell text: ${JSON.stringify(beforeForward)}`);
+          }
+
+          if (
+            forward.empty ||
+            forward.text !== "y" ||
+            forward.rowIndex !== 0 ||
+            forward.cellIndex !== 1
+          ) {
+            throw new Error(`Expected Tab to select second table cell text: ${JSON.stringify(forward)}`);
+          }
+
+          if (
+            backward.empty ||
+            backward.text !== "x" ||
+            backward.rowIndex !== 0 ||
+            backward.cellIndex !== 0
+          ) {
+            throw new Error(`Expected Shift+Tab to select first table cell text: ${JSON.stringify(backward)}`);
+          }
+
+          return {
+            beforeForward,
+            forward,
+            backward,
+          };
+        });
+      }
+
+      async function runArrowEntryScenario(commandName, expectedWidgetType) {
+        return withController(async (controller, contentWindow) => {
+          markStep(`${commandName}.insert`);
+          insertCommand(controller, commandName);
+
+          markStep(`${commandName}.waitWidget`);
+          await waitFor(() => {
+            const firstBlock = controller.view.state.doc.firstChild.firstChild;
+            return firstBlock?.type?.name === expectedWidgetType;
+          });
+
+          const widgetNode = controller.view.state.doc.firstChild.firstChild;
+          const widgetPos = 1;
+
+          markStep(`${commandName}.exit`);
+          if (!controller.exitFullLineWidgetBoundary(widgetPos, widgetNode, "after")) {
+            throw new Error(`Expected to exit ${commandName} to trailing paragraph`);
+          }
+
+          markStep(`${commandName}.arrowEnter`);
+          await dispatchEditorKey(controller, contentWindow, "ArrowLeft");
+
+          if (commandName === "table") {
+            const snapshot = getTableSelectionSnapshot(controller);
+
+            if (snapshot.empty !== true || snapshot.cellIndex !== 1) {
+              throw new Error(`Expected ArrowLeft to enter the table with a collapsed selection: ${JSON.stringify(snapshot)}`);
             }
-          : null;
-      }
 
-      async function runCommandScenario(commandName, expectedSteps) {
-        return withController(async (controller) => {
-          controller.dispatchTransaction(
-            controller.view.state.tr.insertText(`\\${commandName}`)
-          );
-
-          if (!controller.executeBackslashCommandAtSelection()) {
-            throw new Error(`Expected \\\\${commandName} command to execute`);
+            return snapshot;
           }
 
-          const mathTarget = await waitFor(() => controller.getFocusedOrPendingMathTarget());
-          const mathView = controller.getMathView(mathTarget.id);
+          const snapshot = await waitFor(() => {
+            const value = getMathSelectionSnapshot(controller);
+            return value.type === "align_math" ? value : null;
+          });
 
-          if (!mathView) {
-            throw new Error(`Expected ${commandName} math view`);
+          if (snapshot.isCollapsed !== true) {
+            throw new Error(`Expected ArrowLeft to enter align with a collapsed math selection: ${JSON.stringify(snapshot)}`);
           }
 
-          const steps = [getActiveTargetSnapshot(controller)];
-
-          for (let index = 0; index < expectedSteps - 1; index += 1) {
-            await dispatchTab(controller);
-            steps.push(getActiveTargetSnapshot(controller));
-          }
-
-          return {
-            steps,
-            isMathActive: controller.isMathActive(),
-            selection: {
-              from: controller.view.state.selection.from,
-              to: controller.view.state.selection.to,
-              parentType: controller.view.state.selection.$from.parent.type.name,
-            },
-            doc: controller.view.state.doc.toJSON(),
-          };
-        });
-      }
-
-      async function runImmediateAlignScenario() {
-        return withController(async (controller) => {
-          controller.view.focus();
-          controller.dispatchTransaction(
-            controller.view.state.tr.insertText("\\align")
-          );
-
-          if (!controller.executeBackslashCommandAtSelection()) {
-            throw new Error("Expected \\\\align command to execute");
-          }
-
-          const initialTarget = controller.getFocusedOrPendingMathTarget();
-
-          if (!initialTarget || initialTarget.node.type.name !== "align_math") {
-            throw new Error(`Expected pending align target, got ${JSON.stringify(initialTarget)}`);
-          }
-
-          await dispatchImmediateTab(controller);
-
-          const nextTarget = controller.getFocusedOrPendingMathTarget();
-
-          return {
-            before: {
-              activeElement: controller.view.dom.ownerDocument.activeElement?.tagName ?? null,
-              target: {
-                id: initialTarget.id,
-                pos: initialTarget.pos,
-                type: initialTarget.node.type.name,
-              },
-            },
-            after: nextTarget
-              ? {
-                  id: nextTarget.id,
-                  pos: nextTarget.pos,
-                  type: nextTarget.node.type.name,
-                }
-              : null,
-            isMathActive: controller.isMathActive(),
-            selection: {
-              from: controller.view.state.selection.from,
-              to: controller.view.state.selection.to,
-              parentType: controller.view.state.selection.$from.parent.type.name,
-            },
-            doc: controller.view.state.doc.toJSON(),
-          };
-        });
-      }
-
-      async function runImmediateAlignFilledScenario() {
-        return withController(async (controller) => {
-          controller.view.focus();
-          controller.dispatchTransaction(
-            controller.view.state.tr.insertText("\\align")
-          );
-
-          if (!controller.executeBackslashCommandAtSelection()) {
-            throw new Error("Expected \\\\align command to execute");
-          }
-
-          const { target, mathView } = await waitForMathView(controller);
-          mathView.focusAtEdge("start");
-          await new Promise((resolve) => setTimeout(resolve, 60));
-          mathView.mathField.setValue("x", { format: "latex" });
-          mathView.mathField.dispatchEvent(new Event("input", { bubbles: true }));
-          await new Promise((resolve) => setTimeout(resolve, 60));
-
-          const before = {
-            activeElement: controller.view.dom.ownerDocument.activeElement?.tagName ?? null,
-            isMathActive: controller.isMathActive(),
-            pendingMathTarget: controller.getFocusedOrPendingMathTarget()
-              ? {
-                  id: controller.getFocusedOrPendingMathTarget().id,
-                  pos: controller.getFocusedOrPendingMathTarget().pos,
-                  type: controller.getFocusedOrPendingMathTarget().node.type.name,
-                }
-              : null,
-            activeMathId: controller.activeMathId ?? null,
-            pendingMathFocusId: controller.pendingMathFocusId ?? null,
-          };
-
-          await dispatchImmediateTab(controller);
-
-          const nextTarget = controller.getFocusedOrPendingMathTarget();
-
-          return {
-            before,
-            after: nextTarget
-              ? {
-                  id: nextTarget.id,
-                  pos: nextTarget.pos,
-                  type: nextTarget.node.type.name,
-                }
-              : null,
-            isMathActive: controller.isMathActive(),
-            selection: {
-              from: controller.view.state.selection.from,
-              to: controller.view.state.selection.to,
-              parentType: controller.view.state.selection.$from.parent.type.name,
-            },
-            doc: controller.view.state.doc.toJSON(),
-          };
-        });
-      }
-
-      async function runBoundaryBlurAlignScenario() {
-        return withController(async (controller) => {
-          controller.view.focus();
-          controller.dispatchTransaction(
-            controller.view.state.tr.insertText("\\align")
-          );
-
-          if (!controller.executeBackslashCommandAtSelection()) {
-            throw new Error("Expected \\\\align command to execute");
-          }
-
-          const { mathView } = await waitForMathView(controller);
-          mathView.focusAtEdge("start");
-          await new Promise((resolve) => setTimeout(resolve, 60));
-          mathView.mathField.setValue("x", { format: "latex" });
-          mathView.mathField.dispatchEvent(new Event("input", { bubbles: true }));
-          await new Promise((resolve) => setTimeout(resolve, 60));
-
-          mathView.handleMoveOut(
-            new CustomEvent("move-out", {
-              detail: { direction: "forward" },
-              bubbles: true,
-              cancelable: true,
-            })
-          );
-          mathView.handleBlur();
-          await new Promise((resolve) => setTimeout(resolve, 80));
-
-          const before = {
-            activeElement: controller.view.dom.ownerDocument.activeElement?.tagName ?? null,
-            isMathActive: controller.isMathActive(),
-            boundaryMathTarget: controller.getBoundaryMathTarget()
-              ? {
-                  id: controller.getBoundaryMathTarget().id,
-                  pos: controller.getBoundaryMathTarget().pos,
-                  type: controller.getBoundaryMathTarget().node.type.name,
-                }
-              : null,
-          };
-
-          await dispatchImmediateTab(controller);
-
-          const nextTarget = controller.getFocusedOrPendingMathTarget()
-            ?? controller.getBoundaryMathTarget();
-
-          return {
-            before,
-            after: nextTarget
-              ? {
-                  id: nextTarget.id,
-                  pos: nextTarget.pos,
-                  type: nextTarget.node.type.name,
-                }
-              : null,
-            isMathActive: controller.isMathActive(),
-            selection: {
-              from: controller.view.state.selection.from,
-              to: controller.view.state.selection.to,
-              parentType: controller.view.state.selection.$from.parent.type.name,
-            },
-            doc: controller.view.state.doc.toJSON(),
-          };
+          return snapshot;
         });
       }
 
       try {
-        const gather = await runCommandScenario("gather", 2);
-        const align = await runCommandScenario("align", 3);
-        const immediateAlign = await runImmediateAlignScenario();
-        const immediateAlignFilled = await runImmediateAlignFilledScenario();
-        const boundaryBlurAlign = await runBoundaryBlurAlignScenario();
-
-        if (!immediateAlign.after || immediateAlign.after.type !== "align_math") {
-          throw new Error(`Immediate align tab lost widget: ${JSON.stringify(immediateAlign)}`);
-        }
-
-        if (!immediateAlignFilled.after || immediateAlignFilled.after.type !== "align_math") {
-          throw new Error(
-            `Immediate filled align tab lost widget: ${JSON.stringify(immediateAlignFilled)}`
-          );
-        }
-
-        if (!boundaryBlurAlign.after || boundaryBlurAlign.after.type !== "align_math") {
-          throw new Error(
-            `Boundary blur align tab lost widget: ${JSON.stringify(boundaryBlurAlign)}`
-          );
-        }
+        markStep("start");
+        const alignTab = await runAlignTabScenario();
+        const tableTab = await runTableTabScenario();
+        const alignArrow = await runArrowEntryScenario("align", "align_block");
+        const tableArrow = await runArrowEntryScenario("table", "table");
 
         document.body.dataset.result = "pass";
-        document.body.dataset.gather = JSON.stringify(gather);
-        document.body.dataset.align = JSON.stringify(align);
-        document.body.dataset.immediateAlign = JSON.stringify(immediateAlign);
-        document.body.dataset.immediateAlignFilled = JSON.stringify(immediateAlignFilled);
-        document.body.dataset.boundaryBlurAlign = JSON.stringify(boundaryBlurAlign);
+        document.body.dataset.alignTab = JSON.stringify(alignTab);
+        document.body.dataset.tableTab = JSON.stringify(tableTab);
+        document.body.dataset.alignArrow = JSON.stringify(alignArrow);
+        document.body.dataset.tableArrow = JSON.stringify(tableArrow);
       } catch (error) {
         document.body.dataset.result = "fail";
         document.body.dataset.error = error instanceof Error ? error.message : String(error);

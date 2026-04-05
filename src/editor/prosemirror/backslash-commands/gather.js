@@ -168,16 +168,5 @@ export function createGatherCommand(schema) {
       );
       return gatherBlock;
     },
-    getSelectionTarget: ({ blockNode, blockPos }) => {
-      const firstMathNode = blockNode.firstChild?.firstChild;
-      const firstMathPos = findGatherMathPos(blockNode, blockPos, 0, 0);
-
-      return {
-        selectionPos: firstMathPos + (firstMathNode?.nodeSize ?? 1),
-        selectionBias: -1,
-        focusMathId: firstMathNode?.attrs?.id ?? null,
-        focusMathEdge: "start",
-      };
-    },
   });
 }

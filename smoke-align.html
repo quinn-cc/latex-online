@@ -6,6 +6,18 @@
   </head>
   <body>
     <script type="module">
+      function markStep(step, detail = null) {
+        document.body.dataset.step = step;
+
+        if (detail == null) {
+          delete document.body.dataset.stepDetail;
+          return;
+        }
+
+        document.body.dataset.stepDetail =
+          typeof detail === "string" ? detail : JSON.stringify(detail);
+      }
+
       const iframe = document.createElement("iframe");
       iframe.src = "./?debug=1";
       iframe.style.width = "1280px";
@@ -42,53 +54,106 @@
         }
       }
 
+      function pressSettingsButton(button, win, label) {
+        assert(button, `Expected ${label}`);
+        const mouseDown = new win.MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+        });
+        button.dispatchEvent(mouseDown);
+        assert(
+          mouseDown.defaultPrevented,
+          `Expected ${label} mousedown to preserve widget settings context`
+        );
+        button.dispatchEvent(
+          new win.MouseEvent("mouseup", {
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        button.click();
+      }
+
+      function insertCommand(controller, commandName) {
+        controller.view.focus();
+        controller.dispatchTransaction(
+          controller.view.state.tr.insertText(`\\${commandName}`)
+        );
+
+        if (!controller.executeBackslashCommandAtSelection()) {
+          throw new Error(`Expected \\\\${commandName} command to execute`);
+        }
+      }
+
       try {
+        markStep("boot");
         await waitFor(
           () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
         );
 
         const controller = iframe.contentWindow.__latexOnlineDebug.controller;
-        const state = controller.view.state;
-        const paragraph = controller.view.state.doc.firstChild.firstChild;
-        const paragraphStart = 2;
-        const tr = state.tr.insertText("\\align", paragraphStart, paragraphStart);
+        const contentDocument = iframe.contentDocument;
 
-        controller.dispatchTransaction(tr);
-        controller.executeBackslashCommandAtSelection();
+        insertCommand(controller, "align");
 
-        await waitFor(() => {
-          const doc = controller.view.state.doc;
-          const firstBlock = doc.firstChild.firstChild;
-          return firstBlock?.type?.name === "align_block";
-        });
+        markStep("waitWidget");
+        await waitFor(() => controller.getActiveSlashItemState()?.type === "align");
+        await waitFor(
+          () => !(contentDocument.getElementById("slash-item-settings")?.hidden ?? true)
+        );
 
         const alignItem = controller.getActiveSlashItemState();
+        markStep("activeItem", alignItem);
         assert(alignItem?.type === "align", "Expected active slash item to be align");
         assert(alignItem.settings.columnCount === 1, "Expected initial columnCount to be 1");
 
-        const toggleButton = iframe.contentDocument.getElementById(
+        const toggleButton = contentDocument.getElementById(
           "slash-item-settings-toggle"
         );
-        const form = iframe.contentDocument.getElementById("slash-item-settings-form");
+        const applyButton = contentDocument.getElementById("slash-item-settings-apply");
 
         assert(toggleButton, "Expected slash item settings toggle");
-        assert(form, "Expected slash item settings form");
+        assert(applyButton, "Expected slash item settings apply button");
 
+        markStep("toggle.before", {
+          overlayHidden: contentDocument.getElementById("slash-item-settings")?.hidden ?? null,
+          activeItem: controller.getActiveSlashItemState(),
+        });
         toggleButton.click();
 
+        markStep("toggle.after", {
+          overlayHidden: contentDocument.getElementById("slash-item-settings")?.hidden ?? null,
+          panelHidden: contentDocument.getElementById("slash-item-settings-panel")?.hidden ?? null,
+          activeItem: controller.getActiveSlashItemState(),
+        });
         await waitFor(() => {
-          const input = iframe.contentDocument.getElementById("slash-item-align-columnCount");
-          return input && !input.hidden;
+          const input = contentDocument.getElementById("slash-item-align-columnCount");
+          markStep("waitInput", {
+            hasInput: Boolean(input),
+            inputHidden: input?.hidden ?? null,
+            overlayHidden: contentDocument.getElementById("slash-item-settings")?.hidden ?? null,
+            panelHidden: contentDocument.getElementById("slash-item-settings-panel")?.hidden ?? null,
+            activeItem: controller.getActiveSlashItemState(),
+          });
+          return Boolean(input);
         });
 
-        const input = iframe.contentDocument.getElementById("slash-item-align-columnCount");
+        const input = contentDocument.getElementById("slash-item-align-columnCount");
         input.value = "2";
-        form.requestSubmit();
+        input.dispatchEvent(
+          new contentDocument.defaultView.Event("input", { bubbles: true })
+        );
+        pressSettingsButton(
+          applyButton,
+          contentDocument.defaultView,
+          "Align apply button"
+        );
 
         await waitFor(() => {
-          const doc = controller.view.state.doc;
-          const alignBlock = doc.firstChild.firstChild;
-          return alignBlock?.attrs?.groupCount === 2;
+          const alignBlock = controller.view.state.doc.firstChild.firstChild;
+          return alignBlock?.type?.name === "align_block"
+            && alignBlock?.attrs?.groupCount === 2
+            && alignBlock?.firstChild?.childCount === 4;
         });
 
         const alignBlock = controller.view.state.doc.firstChild.firstChild;

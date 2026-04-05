@@ -14,10 +14,10 @@ export class MathSession {
 
     this.activeMathId = null;
     this.lastFocusedMathId = null;
-    this.boundaryMathCaptureId = null;
-    this.boundaryMathCaptureDirection = null;
     this.pendingMathFocusId = null;
     this.pendingMathFocusEdge = "start";
+    this.pendingMathFocusOffset = null;
+    this.pendingMathFocusSelectionMode = "collapse";
     this.pendingMathFocusFrame = 0;
   }
 
@@ -25,48 +25,33 @@ export class MathSession {
     this.cancelPendingFocus();
     this.activeMathId = null;
     this.lastFocusedMathId = null;
-    this.clearBoundaryCapture();
   }
 
   handleFocus(id) {
-    this.cancelPendingFocusFrame();
-
     if (this.pendingMathFocusId === id) {
+      this.cancelPendingFocusFrame();
       this.pendingMathFocusId = null;
-    }
-
-    if (this.boundaryMathCaptureId === id) {
-      this.clearBoundaryCapture();
+      this.pendingMathFocusOffset = null;
+      this.pendingMathFocusSelectionMode = "collapse";
+    } else if (this.pendingMathFocusId == null) {
+      this.cancelPendingFocusFrame();
     }
 
     this.activeMathId = id;
     this.lastFocusedMathId = id;
   }
 
-  handleBlur(id, { boundaryDirection } = {}) {
+  handleBlur(id) {
     if (this.activeMathId === id) {
       this.activeMathId = null;
     }
-
-    if (boundaryDirection) {
-      this.boundaryMathCaptureId = id;
-      this.boundaryMathCaptureDirection = boundaryDirection;
-      return;
-    }
-
-    if (this.boundaryMathCaptureId === id) {
-      this.clearBoundaryCapture();
-    }
-  }
-
-  clearBoundaryCapture() {
-    this.boundaryMathCaptureId = null;
-    this.boundaryMathCaptureDirection = null;
   }
 
   cancelPendingFocus() {
     this.cancelPendingFocusFrame();
     this.pendingMathFocusId = null;
+    this.pendingMathFocusOffset = null;
+    this.pendingMathFocusSelectionMode = "collapse";
   }
 
   cancelPendingFocusFrame() {
@@ -94,9 +79,6 @@ export class MathSession {
       this.lastFocusedMathId = null;
     }
 
-    if (this.boundaryMathCaptureId === id) {
-      this.clearBoundaryCapture();
-    }
   }
 
   getMathTarget() {
@@ -135,17 +117,6 @@ export class MathSession {
       ?? null;
   }
 
-  getBoundaryTarget() {
-    const target = this.getMathTargetById(this.boundaryMathCaptureId);
-
-    if (!target) {
-      this.clearBoundaryCapture();
-      return null;
-    }
-
-    return target;
-  }
-
   isMathActive() {
     if (this.activeMathId == null) {
       return false;
@@ -166,6 +137,8 @@ export class MathSession {
 
     if (!this.getMathTargetById(this.pendingMathFocusId)) {
       this.pendingMathFocusId = null;
+      this.pendingMathFocusOffset = null;
+      this.pendingMathFocusSelectionMode = "collapse";
       return false;
     }
 
@@ -176,40 +149,61 @@ export class MathSession {
     return this.isMathActive() || this.hasPendingFocus();
   }
 
-  focusNode(id, edge = "start") {
-    if (this.boundaryMathCaptureId === id) {
-      this.clearBoundaryCapture();
+  prepareFocus(id, edge = "start", options = {}) {
+    if (!id) {
+      return false;
     }
 
+    const offset = Number.isFinite(options.offset) ? options.offset : null;
+    const selectionMode = options.selectionMode ?? "collapse";
+
+    this.cancelPendingFocusFrame();
+    this.pendingMathFocusId = id;
+    this.pendingMathFocusEdge = edge;
+    this.pendingMathFocusOffset = offset;
+    this.pendingMathFocusSelectionMode = selectionMode;
+
+    return true;
+  }
+
+  focusNode(id, edge = "start", options = {}) {
+    const offset = Number.isFinite(options.offset) ? options.offset : null;
+    const selectionMode = options.selectionMode ?? "collapse";
     const nodeView = this.getMathView(id);
+
+    this.prepareFocus(id, edge, { offset, selectionMode });
 
     if (nodeView) {
       this.debug?.("controller.focusMathNode", {
         id,
         edge,
+        offset,
+        selectionMode,
         via: "nodeView",
       });
-      this.scheduleFocus(id, edge);
+      this.scheduleFocus(id, edge, { offset, selectionMode });
       return true;
     }
 
-    this.pendingMathFocusId = id;
-    this.pendingMathFocusEdge = edge;
     this.debug?.("controller.focusMathNode", {
       id,
       edge,
+      offset,
+      selectionMode,
       via: "pending",
     });
     return false;
   }
 
-  scheduleFocus(id, edge = "start") {
-    this.cancelPendingFocusFrame();
-    this.pendingMathFocusId = id;
-    this.pendingMathFocusEdge = edge;
+  scheduleFocus(id, edge = "start", options = {}) {
+    const offset = Number.isFinite(options.offset) ? options.offset : null;
+    const selectionMode = options.selectionMode ?? "collapse";
+    this.prepareFocus(id, edge, { offset, selectionMode });
     this.debug?.("controller.scheduleMathFocus", {
       id,
       edge,
+      offset,
+      selectionMode,
     });
     this.pendingMathFocusFrame = this.requestFrame(() => {
       this.pendingMathFocusFrame = 0;
@@ -218,6 +212,8 @@ export class MathSession {
         this.debug?.("controller.scheduleMathFocus.aborted", {
           id,
           edge,
+          offset,
+          selectionMode,
           activeMathId: this.activeMathId,
           pendingMathFocusId: this.pendingMathFocusId,
         });
@@ -229,26 +225,40 @@ export class MathSession {
       if (!nodeView) {
         this.pendingMathFocusId = id;
         this.pendingMathFocusEdge = edge;
+        this.pendingMathFocusOffset = offset;
+        this.pendingMathFocusSelectionMode = selectionMode;
         this.debug?.("controller.scheduleMathFocus.missingNodeView", {
           id,
           edge,
+          offset,
+          selectionMode,
         });
         return;
       }
 
       try {
-        nodeView.focusAtEdge(edge);
+        nodeView.focusForEntry({
+          edge,
+          offset,
+          selectionMode,
+        });
         this.debug?.("controller.scheduleMathFocus.applied", {
           id,
           edge,
+          offset,
+          selectionMode,
           activeElement: document.activeElement,
         });
       } catch (error) {
         this.pendingMathFocusId = id;
         this.pendingMathFocusEdge = edge;
+        this.pendingMathFocusOffset = offset;
+        this.pendingMathFocusSelectionMode = selectionMode;
         this.debug?.("controller.scheduleMathFocus.error", {
           id,
           edge,
+          offset,
+          selectionMode,
           message: error instanceof Error ? error.message : String(error),
         });
       }

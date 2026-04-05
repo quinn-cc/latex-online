@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Shared Widget Boundary Smoke</title>
+  </head>
+  <body data-result="pending">
+    <script type="module">
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function withController(run) {
+        const iframe = document.createElement("iframe");
+        iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
+        iframe.style.width = "1280px";
+        iframe.style.height = "900px";
+        document.body.append(iframe);
+
+        await waitFor(
+          () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+        );
+
+        const controller = iframe.contentWindow.__latexOnlineDebug.controller;
+        controller.clear();
+        await sleep(80);
+        return run(controller, iframe.contentWindow);
+      }
+
+      function dispatchEditorKey(controller, contentWindow, key, options = {}) {
+        controller.view.dom.dispatchEvent(
+          new contentWindow.KeyboardEvent("keydown", {
+            key,
+            bubbles: true,
+            cancelable: true,
+            ...options,
+          })
+        );
+      }
+
+      function insertCommand(controller, commandName) {
+        controller.view.focus();
+        controller.dispatchTransaction(
+          controller.view.state.tr.insertText(`\\${commandName}`)
+        );
+
+        if (!controller.executeBackslashCommandAtSelection()) {
+          throw new Error(`Expected \\\\${commandName} command to execute`);
+        }
+      }
+
+      function getTopLevelBlocks(controller) {
+        const page = controller.view.state.doc.firstChild;
+        return page
+          ? Array.from({ length: page.childCount }, (_, index) => page.child(index))
+          : [];
+      }
+
+      function getTableSelectionIndices(selection, schema) {
+        let rowIndex = null;
+        let cellIndex = null;
+
+        for (let depth = selection.$from.depth; depth >= 0; depth -= 1) {
+          const node = selection.$from.node(depth);
+
+          if (cellIndex == null && node.type === schema.nodes.table_row) {
+            cellIndex = selection.$from.index(depth);
+            continue;
+          }
+
+          if (rowIndex == null && node.type === schema.nodes.table) {
+            rowIndex = selection.$from.index(depth);
+            break;
+          }
+        }
+
+        return {
+          rowIndex,
+          cellIndex,
+        };
+      }
+
+      async function runInlineArrowScenario() {
+        return withController(async (controller, contentWindow) => {
+          const insertTransaction = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            controller.view.state.selection.from,
+            controller.view.state.selection.to,
+            "x"
+          );
+
+          controller.dispatchTransaction(insertTransaction);
+
+          const insertedMath = await waitFor(() =>
+            controller.getFocusedOrPendingMathTarget()
+          );
+
+          if (!controller.commitAndExitMathNode(insertedMath.pos, "after")) {
+            throw new Error("Expected to exit inline math to the right");
+          }
+
+          await sleep(80);
+          dispatchEditorKey(controller, contentWindow, "ArrowLeft");
+
+          const reenteredMath = await waitFor(() =>
+            controller.getFocusedOrPendingMathTarget()
+          );
+
+          return {
+            expectedId: insertedMath.id,
+            actualId: reenteredMath.id,
+            type: reenteredMath.node.type.name,
+          };
+        });
+      }
+
+      async function runInlineBackspaceScenario() {
+        return withController(async (controller, contentWindow) => {
+          const insertTransaction = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            controller.view.state.selection.from,
+            controller.view.state.selection.to,
+            "x"
+          );
+
+          controller.dispatchTransaction(insertTransaction);
+
+          const insertedMath = await waitFor(() =>
+            controller.getFocusedOrPendingMathTarget()
+          );
+
+          if (!controller.commitAndExitMathNode(insertedMath.pos, "after")) {
+            throw new Error("Expected to exit inline math to the right");
+          }
+
+          await sleep(80);
+          dispatchEditorKey(controller, contentWindow, "Backspace");
+
+          await waitFor(() => {
+            const firstBlock = controller.view.state.doc.firstChild.firstChild;
+            return (
+              firstBlock?.type?.name === "paragraph" &&
+              !firstBlock.content.content.some((node) => node.type?.name === "inline_math")
+            );
+          });
+
+          return controller.view.state.doc.toJSON();
+        });
+      }
+
+      async function runBlockArrowScenario(commandName, expectedWidgetType) {
+        return withController(async (controller, contentWindow) => {
+          insertCommand(controller, commandName);
+
+          await waitFor(() => {
+            const firstBlock = controller.view.state.doc.firstChild.firstChild;
+            return firstBlock?.type?.name === expectedWidgetType;
+          });
+
+          const widgetNode = controller.view.state.doc.firstChild.firstChild;
+          const widgetPos = 1;
+
+          if (!controller.exitFullLineWidgetBoundary(widgetPos, widgetNode, "after")) {
+            throw new Error(`Expected to exit ${commandName} to trailing paragraph`);
+          }
+
+          await sleep(80);
+          dispatchEditorKey(controller, contentWindow, "ArrowLeft");
+
+          if (commandName === "table") {
+            await waitFor(() => {
+              const selection = controller.view.state.selection;
+              return selection.$from.parent.type.name === "paragraph" &&
+                selection.$from.node(selection.$from.depth - 1).type ===
+                  controller.view.state.schema.nodes.table_cell;
+            });
+
+            const selection = controller.view.state.selection;
+            const indices = getTableSelectionIndices(selection, controller.view.state.schema);
+            const tableNode = controller.view.state.doc.firstChild.firstChild;
+            const lastRowIndex = tableNode.childCount - 1;
+            const lastCellIndex = tableNode.lastChild.childCount - 1;
+
+            return {
+              parentType: selection.$from.parent.type.name,
+              rowIndex: indices.rowIndex,
+              cellIndex: indices.cellIndex,
+              expectedRowIndex: lastRowIndex,
+              expectedCellIndex: lastCellIndex,
+            };
+          }
+
+          const expectedMathId = widgetNode.lastChild?.lastChild?.attrs?.id ?? null;
+          const target = await waitFor(() => controller.getFocusedOrPendingMathTarget());
+
+          return {
+            expectedId: expectedMathId,
+            actualId: target.id,
+            type: target.node.type.name,
+          };
+        });
+      }
+
+      async function runBlockBackspaceScenario(commandName, expectedWidgetType) {
+        return withController(async (controller, contentWindow) => {
+          insertCommand(controller, commandName);
+
+          await waitFor(() => {
+            const firstBlock = controller.view.state.doc.firstChild.firstChild;
+            return firstBlock?.type?.name === expectedWidgetType;
+          });
+
+          const widgetNode = controller.view.state.doc.firstChild.firstChild;
+          const widgetPos = 1;
+
+          if (!controller.exitFullLineWidgetBoundary(widgetPos, widgetNode, "after")) {
+            throw new Error(`Expected to exit ${commandName} to trailing paragraph`);
+          }
+
+          await sleep(80);
+          dispatchEditorKey(controller, contentWindow, "Backspace");
+
+          await waitFor(() => {
+            const blocks = getTopLevelBlocks(controller);
+            return blocks.length === 1 && blocks[0]?.type?.name === "paragraph";
+          });
+
+          return controller.view.state.doc.toJSON();
+        });
+      }
+
+      try {
+        const inlineArrow = await runInlineArrowScenario();
+        const inlineBackspace = await runInlineBackspaceScenario();
+        const tableArrow = await runBlockArrowScenario("table", "table");
+        const tableBackspace = await runBlockBackspaceScenario("table", "table");
+        const alignArrow = await runBlockArrowScenario("align", "align_block");
+        const alignBackspace = await runBlockBackspaceScenario("align", "align_block");
+        const gatherArrow = await runBlockArrowScenario("gather", "gather_block");
+        const gatherBackspace = await runBlockBackspaceScenario("gather", "gather_block");
+
+        if (inlineArrow.expectedId !== inlineArrow.actualId || inlineArrow.type !== "inline_math") {
+          throw new Error(`Inline arrow re-entry mismatch: ${JSON.stringify(inlineArrow)}`);
+        }
+
+        if (
+          tableArrow.parentType !== "paragraph" ||
+          tableArrow.rowIndex !== tableArrow.expectedRowIndex ||
+          tableArrow.cellIndex !== tableArrow.expectedCellIndex
+        ) {
+          throw new Error(`Table arrow re-entry mismatch: ${JSON.stringify(tableArrow)}`);
+        }
+
+        if (alignArrow.expectedId !== alignArrow.actualId || alignArrow.type !== "align_math") {
+          throw new Error(`Align arrow re-entry mismatch: ${JSON.stringify(alignArrow)}`);
+        }
+
+        if (gatherArrow.expectedId !== gatherArrow.actualId || gatherArrow.type !== "gather_math") {
+          throw new Error(`Gather arrow re-entry mismatch: ${JSON.stringify(gatherArrow)}`);
+        }
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.inlineArrow = JSON.stringify(inlineArrow);
+        document.body.dataset.inlineBackspace = JSON.stringify(inlineBackspace);
+        document.body.dataset.tableArrow = JSON.stringify(tableArrow);
+        document.body.dataset.tableBackspace = JSON.stringify(tableBackspace);
+        document.body.dataset.alignArrow = JSON.stringify(alignArrow);
+        document.body.dataset.alignBackspace = JSON.stringify(alignBackspace);
+        document.body.dataset.gatherArrow = JSON.stringify(gatherArrow);
+        document.body.dataset.gatherBackspace = JSON.stringify(gatherBackspace);
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

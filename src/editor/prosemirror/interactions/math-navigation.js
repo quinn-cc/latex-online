@@ -9,6 +9,31 @@ export function isGridMathVariant(variant) {
   return variant === "align" || variant === "gather";
 }
 
+function getCurrentMathPos(nodeView) {
+  return nodeView.getCurrentPos?.() ?? nodeView.safeGetPos?.() ?? null;
+}
+
+function isFullySelectedMathField(nodeView) {
+  if (nodeView.mathField.selectionIsCollapsed) {
+    return false;
+  }
+
+  const selection = nodeView.mathField.selection;
+  const ranges = selection?.ranges;
+
+  if (!Array.isArray(ranges) || ranges.length !== 1) {
+    return false;
+  }
+
+  const [range] = ranges;
+
+  if (!Array.isArray(range) || range.length !== 2) {
+    return false;
+  }
+
+  return range[0] === 0 && range[1] === nodeView.mathField.lastOffset;
+}
+
 export function handleMathKeyDown(nodeView, event) {
   if (
     nodeView.options.handleBackslashMenuKey?.(event, "math")
@@ -69,6 +94,29 @@ export function handleMathKeyDown(nodeView, event) {
   }
 
   if (
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.isComposing &&
+    event.key === "Backspace" &&
+    nodeView.mathField.selectionIsCollapsed &&
+    nodeView.mathField.position === 0
+  ) {
+    const currentPos = getCurrentMathPos(nodeView);
+
+    if (currentPos != null) {
+      const didDelete = nodeView.options.handleBackspaceAtStart?.(currentPos) ?? false;
+
+      if (didDelete) {
+        event.preventDefault();
+        event.stopPropagation();
+        return true;
+      }
+    }
+  }
+
+  if (
     isGridMathVariant(nodeView.variant) &&
     !event.altKey &&
     !event.ctrlKey &&
@@ -79,10 +127,13 @@ export function handleMathKeyDown(nodeView, event) {
     if (event.shiftKey) {
       event.preventDefault();
       event.stopPropagation();
+      const currentPos = getCurrentMathPos(nodeView);
       const shiftEnterHandler = nodeView.variant === "align"
         ? nodeView.options.handleAlignShiftEnter
         : nodeView.options.handleGatherShiftEnter;
-      shiftEnterHandler?.(nodeView.getPos(), nodeView.getDraftPatch());
+      if (currentPos != null) {
+        shiftEnterHandler?.(currentPos, nodeView.getDraftPatch());
+      }
       return true;
     }
 
@@ -92,10 +143,13 @@ export function handleMathKeyDown(nodeView, event) {
 
     event.preventDefault();
     event.stopPropagation();
+    const currentPos = getCurrentMathPos(nodeView);
     const enterHandler = nodeView.variant === "align"
       ? nodeView.options.handleAlignEnter
       : nodeView.options.handleGatherEnter;
-    enterHandler?.(nodeView.getPos(), nodeView.getDraftPatch());
+    if (currentPos != null) {
+      enterHandler?.(currentPos, nodeView.getDraftPatch());
+    }
     return true;
   }
 
@@ -120,10 +174,14 @@ export function handleMathKeyDown(nodeView, event) {
     event.stopPropagation();
 
     if (isGridMathVariant(nodeView.variant)) {
-      nodeView.options.removeMathNode(
-        nodeView.getPos(),
-        event.key === "Backspace" ? "before" : "after"
-      );
+      const currentPos = getCurrentMathPos(nodeView);
+
+      if (currentPos != null) {
+        nodeView.options.removeMathNode(
+          currentPos,
+          event.key === "Backspace" ? "before" : "after"
+        );
+      }
       return true;
     }
 
@@ -192,40 +250,22 @@ export function handleMathKeyDown(nodeView, event) {
   return false;
 }
 
-export function handleMathMoveOut(nodeView, event) {
-  nodeView.options.debug?.("math.moveOut", {
-    instanceId: nodeView.instanceId,
-    id: nodeView.node.attrs.id,
-    pos: nodeView.safeGetPos(),
-    variant: nodeView.variant,
-    direction: event.detail.direction,
-  });
-
-  if (
-    event.detail.direction === "forward" ||
-    event.detail.direction === "backward"
-  ) {
-    event.preventDefault();
-    event.stopPropagation();
-    nodeView.pendingBoundaryDirection = event.detail.direction;
-    return true;
-  }
-
-  return false;
-}
-
 export function handleMathTabNavigation(nodeView, direction) {
   if (isGridMathVariant(nodeView.variant)) {
-    if (moveWithinMathField(nodeView, direction)) {
+    const currentPos = getCurrentMathPos(nodeView);
+    const isTransitSelection = isFullySelectedMathField(nodeView);
+
+    if (!isTransitSelection && moveWithinMathField(nodeView, direction)) {
       return true;
     }
 
-    const didHandleGridTransition =
-      nodeView.options.handleGridTab?.(
-        nodeView.getPos(),
-        direction,
-        nodeView.getDraftPatch()
-      ) ?? false;
+    const didHandleGridTransition = currentPos != null
+      ? (nodeView.options.handleGridTab?.(
+          currentPos,
+          direction,
+          nodeView.getDraftPatch()
+        ) ?? false)
+      : false;
 
     if (didHandleGridTransition) {
       return true;
@@ -278,7 +318,6 @@ export function requestMathExit(nodeView, direction) {
   }
 
   nodeView.pendingExitDirection = direction;
-  nodeView.pendingBoundaryDirection = null;
   nodeView.isExiting = true;
   nodeView.dom.classList.remove("is-focused");
   nodeView.options.debug?.("math.requestExit", {
@@ -291,7 +330,10 @@ export function requestMathExit(nodeView, direction) {
   });
 
   if (!isGridMathVariant(nodeView.variant) && nodeView.mathField.getValue().trim() === "") {
-    const didRemove = nodeView.options.removeMathNode(nodeView.getPos(), direction);
+    const currentPos = getCurrentMathPos(nodeView);
+    const didRemove = currentPos != null
+      ? nodeView.options.removeMathNode(currentPos, direction)
+      : false;
 
     if (!didRemove) {
       nodeView.isExiting = false;
@@ -304,7 +346,10 @@ export function requestMathExit(nodeView, direction) {
 
   nodeView.syncDraftLatexFromField();
   const patch = nodeView.getDraftPatch();
-  const didExit = nodeView.options.commitAndExitMathNode(nodeView.getPos(), direction, patch);
+  const currentPos = getCurrentMathPos(nodeView);
+  const didExit = currentPos != null
+    ? nodeView.options.commitAndExitMathNode(currentPos, direction, patch)
+    : false;
 
   if (!didExit) {
     nodeView.isExiting = false;
@@ -355,7 +400,6 @@ export function removeEmptyMath(nodeView, direction) {
   nodeView.isRemoving = true;
   nodeView.isExiting = false;
   nodeView.pendingExitDirection = null;
-  nodeView.pendingBoundaryDirection = null;
   nodeView.dom.classList.remove("is-focused");
   nodeView.options.debug?.("math.removeEmptyMath", {
     instanceId: nodeView.instanceId,
@@ -365,7 +409,14 @@ export function removeEmptyMath(nodeView, direction) {
     direction,
     activeElement: document.activeElement,
   });
-  nodeView.options.removeMathNode(nodeView.getPos(), direction);
+  const currentPos = getCurrentMathPos(nodeView);
+
+  if (currentPos == null) {
+    nodeView.isRemoving = false;
+    return false;
+  }
+
+  nodeView.options.removeMathNode(currentPos, direction);
   return true;
 }
 

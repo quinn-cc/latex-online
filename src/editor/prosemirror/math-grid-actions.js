@@ -48,6 +48,16 @@ export const mathGridActionMethods = {
     });
 
     if (!result) {
+      this.debugLog(`${debugType}.missingResult`, {
+        [debugPositionKey]: blockPos,
+        currentBlockType: currentBlockNode?.type?.name ?? null,
+        nextBlockType: nextBlockNode?.type?.name ?? null,
+        expectedBlockType: blockNodeType?.name ?? null,
+        expectedMathType: mathNodeType?.name ?? null,
+        nextRowIndex,
+        nextCellIndex,
+        ...debugDetail,
+      });
       return false;
     }
 
@@ -55,10 +65,12 @@ export const mathGridActionMethods = {
     setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
 
     if (targetMathId && targetMathNode?.type === mathNodeType) {
+      this.beginWidgetFocusHandoff?.();
+      this.prepareMathFocusHandoff?.(targetMathId, nextFocusEdge, {
+        selectionMode: "collapse",
+      });
       this.activeMathId = null;
       this.lastFocusedMathId = targetMathId;
-      this.pendingMathFocusId = targetMathId;
-      this.pendingMathFocusEdge = nextFocusEdge;
       this.preservedTextSelection = null;
     }
 
@@ -90,6 +102,7 @@ export const mathGridActionMethods = {
       findMathPos,
       mathNodeType,
       focusEdge = "start",
+      entryMode = "collapse",
       debugType = "controller.moveToMathGridCellFromMath",
       debugDetail = {},
     } = {}
@@ -109,23 +122,23 @@ export const mathGridActionMethods = {
     }
 
     const { tr, targetMathId } = result;
-    setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-    this.activeMathId = null;
-    this.lastFocusedMathId = targetMathId;
-    this.pendingMathFocusId = targetMathId;
-    this.pendingMathFocusEdge = focusEdge;
-    this.preservedTextSelection = null;
     this.debugLog(debugType, {
       pos,
       nextRowIndex,
       nextCellIndex,
       targetMathId,
       focusEdge,
+      entryMode,
       ...debugDetail,
     });
-    this.dispatchTransaction(tr);
-    this.focusMathNode(targetMathId, focusEdge);
-    return true;
+    return this.applyWidgetEntryTarget(
+      this.createMathEntryTarget(targetMathId, focusEdge),
+      {
+        entryMode,
+        transaction: tr,
+        toolbarState: this.lastTextContext.toolbarState,
+      }
+    );
   },
 
   exitMathGridAfterBlock(
@@ -255,7 +268,8 @@ export const mathGridActionMethods = {
           getContextAtPos: spec.getContextAtPos,
           findMathPos: spec.findMathPos,
           mathNodeType: spec.mathNodeType,
-          focusEdge: "start",
+          focusEdge: "end",
+          entryMode: "tab",
           debugType: `${spec.debugPrefix}.moveForward`,
           debugDetail: { rowIndex, cellIndex },
         });
@@ -266,7 +280,8 @@ export const mathGridActionMethods = {
           getContextAtPos: spec.getContextAtPos,
           findMathPos: spec.findMathPos,
           mathNodeType: spec.mathNodeType,
-          focusEdge: "start",
+          focusEdge: "end",
+          entryMode: "tab",
           debugType: `${spec.debugPrefix}.moveNextRow`,
           debugDetail: { rowIndex, cellIndex },
         });
@@ -285,6 +300,7 @@ export const mathGridActionMethods = {
         findMathPos: spec.findMathPos,
         mathNodeType: spec.mathNodeType,
         focusEdge: "end",
+        entryMode: "tab",
         debugType: `${spec.debugPrefix}.moveBackward`,
         debugDetail: { rowIndex, cellIndex },
       });
@@ -302,6 +318,7 @@ export const mathGridActionMethods = {
           findMathPos: spec.findMathPos,
           mathNodeType: spec.mathNodeType,
           focusEdge: "end",
+          entryMode: "tab",
           debugType: `${spec.debugPrefix}.movePreviousRow`,
           debugDetail: { rowIndex, cellIndex },
         }
@@ -319,6 +336,8 @@ export const mathGridActionMethods = {
     return this.replaceMathGridBlock({
       ...options,
       blockPos: options.alignPos,
+      currentBlockNode: options.currentBlockNode ?? options.currentAlignBlock,
+      nextBlockNode: options.nextBlockNode ?? options.nextAlignBlock,
       blockNodeType: editorSchema.nodes.align_block,
       mathNodeType: editorSchema.nodes.align_math,
       findMathPos: findAlignMathPos,
@@ -404,6 +423,7 @@ export const mathGridActionMethods = {
       findMathPos: findAlignMathPos,
       mathNodeType: editorSchema.nodes.align_math,
       focusEdge: options.focusEdge ?? "start",
+      entryMode: options.entryMode ?? "collapse",
       debugType: options.debugType ?? "controller.moveToAlignCellFromMath",
       debugDetail: options.debugDetail ?? {},
     });
@@ -463,6 +483,8 @@ export const mathGridActionMethods = {
     return this.replaceMathGridBlock({
       ...options,
       blockPos: options.gatherPos,
+      currentBlockNode: options.currentBlockNode ?? options.currentGatherBlock,
+      nextBlockNode: options.nextBlockNode ?? options.nextGatherBlock,
       blockNodeType: editorSchema.nodes.gather_block,
       mathNodeType: editorSchema.nodes.gather_math,
       findMathPos: findGatherMathPos,
@@ -520,6 +542,7 @@ export const mathGridActionMethods = {
       findMathPos: findGatherMathPos,
       mathNodeType: editorSchema.nodes.gather_math,
       focusEdge: options.focusEdge ?? "start",
+      entryMode: options.entryMode ?? "collapse",
       debugType: options.debugType ?? "controller.moveToGatherCellFromMath",
       debugDetail: options.debugDetail ?? {},
     });
@@ -696,7 +719,8 @@ export const mathGridActionMethods = {
       return false;
     }
 
-    return this.replaceWidgetBlockWithParagraph(alignPos, alignNode, {
+    return this.deleteWidgetAt(alignPos, {
+      trigger: "direct",
       debugType: options.debugType ?? "controller.deleteAlignAt",
       debugDetail: { alignPos },
     });
@@ -709,7 +733,8 @@ export const mathGridActionMethods = {
       return false;
     }
 
-    return this.replaceWidgetBlockWithParagraph(gatherPos, gatherNode, {
+    return this.deleteWidgetAt(gatherPos, {
+      trigger: "direct",
       debugType: options.debugType ?? "controller.deleteGatherAt",
       debugDetail: { gatherPos },
     });

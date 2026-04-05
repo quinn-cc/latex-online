@@ -6,6 +6,18 @@
   </head>
   <body>
     <script type="module">
+      function markStep(step, detail = null) {
+        document.body.dataset.step = step;
+
+        if (detail == null) {
+          delete document.body.dataset.stepDetail;
+          return;
+        }
+
+        document.body.dataset.stepDetail =
+          typeof detail === "string" ? detail : JSON.stringify(detail);
+      }
+
       const iframe = document.createElement("iframe");
       iframe.src = "./?debug=1";
       iframe.style.width = "1280px";
@@ -43,6 +55,7 @@
       }
 
       try {
+        markStep("boot");
         await waitFor(
           () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
         );
@@ -63,6 +76,7 @@
         const mathView = controller.getMathView(mathTarget.id);
 
         assert(mathView, "Expected math view after inline math insertion");
+        markStep("insert.before");
         assert(
           mathView.mathField.insert(
             "\\begin{cases}\n\\placeholder{} & \\placeholder{} \\\\\n\\placeholder{} & \\placeholder{}\n\\end{cases}",
@@ -78,7 +92,28 @@
         controller.emitSlashItemState();
 
         await waitFor(() => {
+          const hasFocus = mathView.hasSettingsInteractionFocus?.() === true;
+          markStep("waitFocus", {
+            hasFocus,
+            activeItem: controller.getActiveSlashItemState(),
+          });
+          return hasFocus;
+        });
+        await waitFor(() => {
+          const model = mathView.mathField._mathfield?.model;
           const item = controller.getActiveSlashItemState();
+          markStep("waitItem", {
+            activeItem: item,
+            directItem: mathView.getActiveSettingsItemState?.({ requireFocus: false }) ?? null,
+            selectionIsCollapsed: mathView.mathField.selectionIsCollapsed,
+            selection: mathView.mathField.selection ?? null,
+            modelPosition: model?.position ?? null,
+            parentEnvironment:
+              model?.parentEnvironment?.environmentName
+              ?? model?.parentEnvironment?.type
+              ?? null,
+            parentCell: model?.parentCell ?? null,
+          });
           return item?.type === "cases";
         });
 

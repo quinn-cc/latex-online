@@ -1,18 +1,17 @@
 import { liftListItem, sinkListItem } from "../../../vendor/prosemirror-schema-list/dist/index.js";
 import { TextSelection } from "prosemirror-state";
-import { createBlockPositionList } from "./page-layout.js";
 import { mathGridActionMethods } from "./math-grid-actions.js";
 import { editorSchema } from "./schema.js";
 import {
+  canDeleteSlashItem as canDeleteRegisteredSlashItem,
   deleteSlashItem as deleteRegisteredSlashItem,
-  isFullLineWidgetNode,
-  getSlashWidgetTypeFromNode,
   getTableContext,
   updateSlashItemSettings as updateRegisteredSlashItemSettings,
 } from "./slash-items/index.js";
 import {
-  getPageBlockBoundaryContext,
+  getBlockBoundaryContext,
   isSelectionInsideListItem,
+  isMathNode,
   setStoredMarksFromToolbarState,
 } from "./state-helpers.js";
 import { tableActionMethods } from "./table-actions.js";
@@ -22,10 +21,37 @@ import {
   buildReplaceWidgetBlockWithParagraph,
   isMathGridBlockEmpty,
 } from "./transforms/math-structural.js";
+import {
+  findEnclosingWidgetInfoAtPos,
+  findEnclosingWidgetInfoForSelection,
+  getWidgetDefinitionFromNode,
+  isContentPosAtNodeLeadingBoundary,
+  isSelectionAtNodeLeadingBoundary,
+  resolveNodeBoundaryEntryTarget,
+  resolveWidgetPointerEntryTarget,
+} from "./widget-registry.js";
 
 export const widgetActionMethods = {
   clearRemovedMathState(nodeId) {
     this.mathSession?.clearRemovedNode(nodeId);
+  },
+
+  clearRemovedMathStateFromNode(node) {
+    if (!node) {
+      return;
+    }
+
+    if (isMathNode(node)) {
+      this.clearRemovedMathState(node.attrs.id ?? null);
+    }
+
+    node.descendants?.((childNode) => {
+      if (isMathNode(childNode)) {
+        this.clearRemovedMathState(childNode.attrs.id ?? null);
+      }
+
+      return true;
+    });
   },
 
   replaceWidgetBlockWithParagraph(
@@ -48,6 +74,7 @@ export const widgetActionMethods = {
     } = result;
     setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
     this.clearRemovedMathState(removedMathId);
+    this.clearRemovedMathStateFromNode(currentBlockNode);
     this.preservedTextSelection = {
       from: tr.selection.from,
       to: tr.selection.to,
@@ -91,6 +118,498 @@ export const widgetActionMethods = {
     return true;
   },
 
+  createWidgetContext(widgetInfo, extra = {}) {
+    if (!widgetInfo?.definition || !widgetInfo.node || widgetInfo.pos == null) {
+      return null;
+    }
+
+    return {
+      source: extra.source ?? "direct",
+      definition: widgetInfo.definition,
+      widget: {
+        node: widgetInfo.node,
+        pos: widgetInfo.pos,
+      },
+      ...extra,
+    };
+  },
+
+  getWidgetContextAtPos(pos, extra = {}) {
+    const widgetInfo = findEnclosingWidgetInfoAtPos(this.view.state.doc, pos);
+    return this.createWidgetContext(widgetInfo, extra);
+  },
+
+  resolvePointerEntryTargetAtPos(pos, pointer = null) {
+    if (!Number.isFinite(pos)) {
+      return null;
+    }
+
+    const context = this.getWidgetContextAtPos(pos, {
+      source: "pointer",
+      contentPos: pos,
+      pointer,
+    });
+
+    if (!context) {
+      return null;
+    }
+
+    return resolveWidgetPointerEntryTarget(
+      context.widget.node,
+      context.widget.pos,
+      {
+        contentNode: this.view.state.doc.nodeAt(pos),
+        contentPos: pos,
+        pointer,
+      }
+    );
+  },
+
+  getEnclosingWidgetContextFromSelection(extra = {}) {
+    const widgetInfo = findEnclosingWidgetInfoForSelection(this.view.state.selection);
+    return this.createWidgetContext(widgetInfo, {
+      source: "selection",
+      ...extra,
+    });
+  },
+
+  createTextEntryTarget(selectionPos, selectionBias = 1) {
+    if (!Number.isFinite(selectionPos)) {
+      return null;
+    }
+
+    let resolvedPos = null;
+
+    try {
+      resolvedPos = this.view.state.doc.resolve(selectionPos);
+    } catch (_error) {
+      return null;
+    }
+
+    const target = {
+      kind: "selection",
+      selectionPos,
+      selectionBias,
+    };
+
+    if (resolvedPos.parent?.isTextblock) {
+      target.selectionFrom = selectionPos;
+      target.selectionTo = selectionPos + resolvedPos.parent.content.size;
+    }
+
+    return target;
+  },
+
+  createMathEntryTarget(mathId, edge = "start", extra = {}) {
+    if (!mathId) {
+      return null;
+    }
+
+    return {
+      kind: "math",
+      mathId,
+      edge,
+      ...extra,
+    };
+  },
+
+  deleteWidget(context, options = {}) {
+    const widgetNode = context?.widget?.node ?? null;
+    const widgetPos = context?.widget?.pos ?? null;
+    const definition = context?.definition ?? getWidgetDefinitionFromNode(widgetNode);
+
+    if (!widgetNode || widgetPos == null || !definition) {
+      return false;
+    }
+
+    const customDeleteResult = definition.deleteWidget?.({
+      controller: this,
+      context,
+      options,
+    });
+
+    if (typeof customDeleteResult === "boolean") {
+      return customDeleteResult;
+    }
+
+    if (options.trigger === "boundary" && context.blockBoundaryContext) {
+      return this.removeBlockWidgetFromBoundary(context);
+    }
+
+    if (definition.placement === "inline") {
+      const inlineDirection = options.direction ??
+        (context.boundarySide === "after" ? "before" : "after");
+
+      return this.deleteInlineMathAt(widgetPos, inlineDirection, {
+        debugType: options.debugType ?? "controller.deleteWidget.inline",
+        debugDetail: {
+          trigger: options.trigger ?? "direct",
+          widgetType: definition.type,
+          ...options.debugDetail,
+        },
+      });
+    }
+
+    if (!definition.fullLine) {
+      return false;
+    }
+
+    return this.replaceWidgetBlockWithParagraph(widgetPos, widgetNode, {
+      debugType: options.debugType ?? "controller.deleteWidget.block",
+      debugDetail: {
+        trigger: options.trigger ?? "direct",
+        widgetType: definition.type,
+        ...options.debugDetail,
+      },
+    });
+  },
+
+  deleteWidgetAt(pos, options = {}) {
+    const context = this.getWidgetContextAtPos(pos, {
+      source: options.source ?? "direct",
+      contentPos: options.contentPos ?? null,
+    });
+
+    if (!context) {
+      return false;
+    }
+
+    return this.deleteWidget(context, options);
+  },
+
+  removeLeadingWidgetFromSelection() {
+    const context = this.getEnclosingWidgetContextFromSelection();
+
+    if (
+      !context ||
+      !isSelectionAtNodeLeadingBoundary(
+        this.view.state,
+        context.widget.node,
+        context.widget.pos
+      )
+    ) {
+      return false;
+    }
+
+    return this.deleteWidget(context, {
+      trigger: "leading-boundary",
+      debugType: "controller.removeLeadingWidgetFromSelection",
+    });
+  },
+
+  removeLeadingWidgetFromContentPos(contentPos) {
+    const context = this.getWidgetContextAtPos(contentPos, {
+      source: "content",
+      contentPos,
+    });
+
+    if (
+      !context ||
+      !isContentPosAtNodeLeadingBoundary(
+        this.view.state.doc,
+        context.widget.node,
+        context.widget.pos,
+        contentPos
+      )
+    ) {
+      return false;
+    }
+
+    return this.deleteWidget(context, {
+      trigger: "leading-boundary",
+      direction: "before",
+      debugType: "controller.removeLeadingWidgetFromContentPos",
+      debugDetail: {
+        contentPos,
+      },
+    });
+  },
+
+  getAdjacentWidgetContext(direction) {
+    const { selection, doc } = this.view.state;
+
+    if (!(selection instanceof TextSelection) || !selection.empty) {
+      return null;
+    }
+
+    const boundarySide = direction === "backward" ? "after" : "before";
+    const resolvedPos = selection.$from;
+    const adjacentInlineNode =
+      direction === "backward" ? resolvedPos.nodeBefore : resolvedPos.nodeAfter;
+    const inlineDefinition = getWidgetDefinitionFromNode(adjacentInlineNode);
+
+    if (inlineDefinition?.placement === "inline") {
+      const widgetPos = direction === "backward"
+        ? resolvedPos.pos - adjacentInlineNode.nodeSize
+        : resolvedPos.pos;
+      const widgetNode = doc.nodeAt(widgetPos);
+
+      if (widgetNode) {
+        return {
+          source: "inline",
+          direction,
+          boundarySide,
+          definition: inlineDefinition,
+          widget: {
+            node: widgetNode,
+            pos: widgetPos,
+          },
+        };
+      }
+    }
+
+    const blockBoundaryContext = getBlockBoundaryContext(this.view.state, direction);
+    const adjacentBlock = blockBoundaryContext?.adjacentBlock ?? null;
+    const blockDefinition = getWidgetDefinitionFromNode(adjacentBlock?.node);
+
+    if (!adjacentBlock || !blockDefinition?.fullLine) {
+      return null;
+    }
+
+    return {
+      source: "block",
+      direction,
+      boundarySide,
+      definition: blockDefinition,
+      widget: {
+        node: adjacentBlock.node,
+        pos: adjacentBlock.pos,
+      },
+      blockBoundaryContext,
+    };
+  },
+
+  applyWidgetEntryTarget(
+    target,
+    {
+      entryMode = "collapse",
+      transaction = null,
+      toolbarState = null,
+    } = {}
+  ) {
+    if (!target) {
+      return false;
+    }
+
+    this.beginWidgetFocusHandoff?.();
+    this.beginSlashItemStateHandoff?.();
+
+    if (target.kind === "math") {
+      if (!target.mathId) {
+        return false;
+      }
+
+      const selectionMode = target.selectionMode ??
+        (entryMode === "tab" ? "select-all" : "collapse");
+      const offset = Number.isFinite(target.offset) ? target.offset : null;
+      const edge = target.edge ?? (
+        offset != null
+          ? (offset <= 0 ? "start" : "end")
+          : selectionMode === "select-all"
+            ? "end"
+            : "start"
+      );
+
+      this.lastFocusedMathId = target.mathId;
+      this.prepareMathFocusHandoff?.(target.mathId, edge, {
+        selectionMode,
+        offset,
+      });
+
+      if (transaction) {
+        if (toolbarState) {
+          setStoredMarksFromToolbarState(transaction, toolbarState);
+        }
+        this.activeMathId = null;
+        this.preservedTextSelection = null;
+        this.dispatchTransaction(transaction);
+      }
+
+      this.focusMathNode(target.mathId, edge, {
+        selectionMode,
+        offset,
+      });
+      this.emitUiState();
+      return true;
+    }
+
+    if (target.kind !== "selection" || !Number.isFinite(target.selectionPos)) {
+      return false;
+    }
+
+    const tr = transaction ?? this.view.state.tr;
+    const shouldSelectEntry = entryMode === "tab" &&
+      Number.isFinite(target.selectionFrom) &&
+      Number.isFinite(target.selectionTo);
+
+    tr.setSelection(
+      shouldSelectEntry
+        ? TextSelection.create(
+            tr.doc,
+            target.selectionFrom,
+            target.selectionTo
+          )
+        : TextSelection.near(
+            tr.doc.resolve(target.selectionPos),
+            target.selectionBias ?? 1
+          )
+    );
+    setStoredMarksFromToolbarState(
+      tr,
+      toolbarState ?? this.getCurrentTextToolbarState()
+    );
+    this.preservedTextSelection = {
+      from: tr.selection.from,
+      to: tr.selection.to,
+    };
+    this.dispatchTransaction(tr);
+    this.focus();
+    return true;
+  },
+
+  enterAdjacentWidget(direction) {
+    if (this.hasMathCapture()) {
+      return false;
+    }
+
+    const context = this.getAdjacentWidgetContext(direction);
+
+    if (!context) {
+      return false;
+    }
+
+    const target = resolveNodeBoundaryEntryTarget(
+      context.widget.node,
+      context.widget.pos,
+      context.boundarySide
+    );
+
+    if (!target) {
+      return false;
+    }
+
+    const didEnter = this.applyWidgetEntryTarget(target);
+
+    if (!didEnter) {
+      return false;
+    }
+
+    this.debugLog("controller.enterAdjacentWidget", {
+      direction,
+      boundarySide: context.boundarySide,
+      source: context.source,
+      widgetType: context.definition.type,
+      widgetPos: context.widget.pos,
+      target,
+    });
+    return true;
+  },
+
+  removeBlockWidgetFromBoundary(context) {
+    const blockBoundaryContext = context?.blockBoundaryContext;
+    const widgetNode = context?.widget?.node ?? null;
+    const widgetPos = context?.widget?.pos ?? null;
+    const currentBlock = blockBoundaryContext?.block ?? null;
+
+    if (
+      !widgetNode ||
+      widgetPos == null ||
+      !currentBlock?.node ||
+      currentBlock.pos == null
+    ) {
+      return false;
+    }
+
+    const selectionPosBeforeDelete = this.view.state.selection.from;
+    let tr = this.view.state.tr;
+    let nextSelectionPos = selectionPosBeforeDelete;
+    let collapsedEmptyParagraph = false;
+
+    if (
+      currentBlock.node.type === editorSchema.nodes.paragraph &&
+      currentBlock.node.content.size === 0
+    ) {
+      const replacementParagraph = editorSchema.nodes.paragraph.createAndFill(
+        currentBlock.node.attrs
+      );
+
+      if (!replacementParagraph) {
+        return false;
+      }
+
+      const replaceFrom = context.boundarySide === "after"
+        ? widgetPos
+        : currentBlock.pos;
+      const replaceTo = context.boundarySide === "after"
+        ? currentBlock.pos + currentBlock.node.nodeSize
+        : widgetPos + widgetNode.nodeSize;
+
+      tr = tr.replaceWith(replaceFrom, replaceTo, replacementParagraph);
+      nextSelectionPos = replaceFrom + 1;
+      collapsedEmptyParagraph = true;
+    } else {
+      tr = tr.delete(widgetPos, widgetPos + widgetNode.nodeSize);
+
+      if (widgetPos < nextSelectionPos) {
+        nextSelectionPos -= widgetNode.nodeSize;
+      }
+
+      nextSelectionPos = Math.max(1, Math.min(nextSelectionPos, tr.doc.content.size));
+    }
+
+    tr = tr.setSelection(
+      TextSelection.near(
+        tr.doc.resolve(nextSelectionPos),
+        collapsedEmptyParagraph
+          ? 1
+          : context.boundarySide === "after"
+            ? 1
+            : -1
+      )
+    );
+    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
+    this.clearRemovedMathStateFromNode(widgetNode);
+    this.preservedTextSelection = {
+      from: tr.selection.from,
+      to: tr.selection.to,
+    };
+    this.debugLog("controller.removeBlockWidgetFromBoundary", {
+      boundarySide: context.boundarySide,
+      collapsedEmptyParagraph,
+      widgetType: context.definition.type,
+      widgetPos,
+      nextSelectionPos,
+      containerType: blockBoundaryContext.container.node.type.name,
+      currentBlockPos: currentBlock.pos,
+    });
+    this.dispatchTransaction(tr);
+    this.focus();
+    return true;
+  },
+
+  removeAdjacentWidget(direction) {
+    if (this.hasMathCapture()) {
+      return false;
+    }
+
+    const context = this.getAdjacentWidgetContext(direction);
+
+    if (!context) {
+      return false;
+    }
+
+    return this.deleteWidget(context, {
+      trigger: "boundary",
+      direction: context.boundarySide === "after" ? "before" : "after",
+      debugType: "controller.removeAdjacentWidget",
+      debugDetail: {
+        requestedDirection: direction,
+        boundarySide: context.boundarySide,
+        source: context.source,
+      },
+    });
+  },
+
   exitFullLineWidgetBoundary(widgetPos, widgetNode, direction, options = {}) {
     const result = buildExitFullLineWidgetBoundary({
       state: this.view.state,
@@ -112,7 +631,6 @@ export const widgetActionMethods = {
       to: tr.selection.to,
     };
     this.activeMathId = null;
-    this.clearBoundaryMathCapture?.();
     this.cancelPendingMathFocus?.();
     this.debugLog(options.debugType ?? "controller.exitFullLineWidgetBoundary", {
       widgetType,
@@ -156,14 +674,10 @@ export const widgetActionMethods = {
       );
     }
 
-    return this.handleArrowIntoMath("left");
+    return this.enterAdjacentWidget("backward");
   },
 
   handleTab(isShift) {
-    if (!this.isMathActive() && this.handleBoundaryMathTab(isShift)) {
-      return true;
-    }
-
     if (!this.isMathActive() && this.handlePendingMathTab(isShift)) {
       return true;
     }
@@ -187,32 +701,6 @@ export const widgetActionMethods = {
     }
 
     return isShift ? false : this.insertTab();
-  },
-
-  handleBoundaryMathTab(isShift) {
-    const target = this.getBoundaryMathTarget?.();
-
-    if (!target || this.isMathActive()) {
-      return false;
-    }
-
-    const nodeView = this.getMathView(target.id);
-    const boundaryDirection = this.boundaryMathCaptureDirection;
-    const focusEdge = boundaryDirection === "backward" ? "start" : "end";
-    const navigationDirection = isShift ? "backward" : "forward";
-
-    this.clearBoundaryMathCapture?.();
-
-    if (nodeView?.focusAtEdge && nodeView?.handleTabNavigation) {
-      try {
-        nodeView.focusAtEdge(focusEdge);
-        return nodeView.handleTabNavigation(navigationDirection);
-      } catch (_error) {
-        return false;
-      }
-    }
-
-    return false;
   },
 
   handlePendingMathTab(isShift) {
@@ -271,74 +759,22 @@ export const widgetActionMethods = {
       return false;
     }
 
-    return this.replaceWidgetBlockWithParagraph(
-      context.block.pos,
-      context.block.node,
-      {
-        debugType,
-        debugDetail: {
-          pos,
-          rowIndex: context.row.index,
-          cellIndex: context.cell.index,
-          ...debugDetail,
-        },
-      }
-    );
+    return this.deleteWidgetAt(context.block.pos, {
+      trigger: "empty-grid",
+      debugType,
+      debugDetail: {
+        pos,
+        rowIndex: context.row.index,
+        cellIndex: context.cell.index,
+        ...debugDetail,
+      },
+    });
   },
 
   ...tableActionMethods,
 
   deletePreviousWidgetBlock() {
-    const boundaryContext = getPageBlockBoundaryContext(
-      this.view.state,
-      createBlockPositionList
-    );
-    const previousWidgetType = getSlashWidgetTypeFromNode(
-      boundaryContext?.previousBlock?.node
-    );
-
-    if (!boundaryContext || !previousWidgetType) {
-      return false;
-    }
-
-    const { previousBlock, block } = boundaryContext;
-    if (block.node?.type === editorSchema.nodes.paragraph && block.node.content.size === 0) {
-      return this.replaceWidgetBlockWithParagraph(
-        previousBlock.pos,
-        previousBlock.node,
-        {
-          debugType: "controller.deletePreviousWidgetBlock",
-          debugDetail: {
-            deletedWidgetType: previousWidgetType,
-            deletedWidgetPos: previousBlock.pos,
-          },
-        }
-      );
-    }
-
-    const tr = this.view.state.tr.delete(
-      previousBlock.pos,
-      previousBlock.pos + previousBlock.node.nodeSize
-    );
-    const deletedSize = previousBlock.node.nodeSize;
-    const nextBlockPos = Math.max(0, block.pos - deletedSize);
-    const nextSelectionPos = Math.max(
-      1,
-      Math.min(nextBlockPos + 1, tr.doc.content.size)
-    );
-
-    tr.setSelection(TextSelection.near(tr.doc.resolve(nextSelectionPos), 1));
-    setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-    this.debugLog("controller.deletePreviousWidgetBlock", {
-      deletedWidgetType: previousWidgetType,
-      deletedWidgetPos: previousBlock.pos,
-      nextBlockPos,
-      nextSelectionPos,
-      removedTrailingParagraph: false,
-    });
-    this.dispatchTransaction(tr);
-    this.focus();
-    return true;
+    return this.removeAdjacentWidget("backward");
   },
 
   handleMathGridExit(
@@ -427,12 +863,6 @@ export const widgetActionMethods = {
               -1
             )
           );
-          setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-          this.activeMathId = null;
-          this.lastFocusedMathId = targetMathId;
-          this.pendingMathFocusId = targetMathId;
-          this.pendingMathFocusEdge = "start";
-          this.preservedTextSelection = null;
           this.debugLog(`${debugPrefix}.moveForward`, {
             pos,
             rowIndex,
@@ -441,9 +871,13 @@ export const widgetActionMethods = {
             nextCellIndex,
             targetMathId,
           });
-          this.dispatchTransaction(tr);
-          this.focusMathNode(targetMathId, "start");
-          return true;
+          return this.applyWidgetEntryTarget(
+            this.createMathEntryTarget(targetMathId, "start"),
+            {
+              transaction: tr,
+              toolbarState: this.lastTextContext.toolbarState,
+            }
+          );
         }
       }
 
@@ -487,12 +921,6 @@ export const widgetActionMethods = {
             -1
           )
         );
-        setStoredMarksFromToolbarState(tr, this.lastTextContext.toolbarState);
-        this.activeMathId = null;
-        this.lastFocusedMathId = targetMathId;
-        this.pendingMathFocusId = targetMathId;
-        this.pendingMathFocusEdge = "end";
-        this.preservedTextSelection = null;
         this.debugLog(`${debugPrefix}.moveBackward`, {
           pos,
           rowIndex,
@@ -501,9 +929,13 @@ export const widgetActionMethods = {
           previousCellIndex,
           targetMathId,
         });
-        this.dispatchTransaction(tr);
-        this.focusMathNode(targetMathId, "end");
-        return true;
+        return this.applyWidgetEntryTarget(
+          this.createMathEntryTarget(targetMathId, "end"),
+          {
+            transaction: tr,
+            toolbarState: this.lastTextContext.toolbarState,
+          }
+        );
       }
     }
 
@@ -527,6 +959,10 @@ export const widgetActionMethods = {
 
   updateSlashItemSettings(item, settings) {
     return updateRegisteredSlashItemSettings(this, item, settings);
+  },
+
+  canDeleteSlashItem(item) {
+    return canDeleteRegisteredSlashItem(this, item);
   },
 
   deleteSlashItem(item) {

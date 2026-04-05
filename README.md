@@ -58,6 +58,9 @@ The editor is now split along four main seams:
 `controller.js` still assembles the runtime, but widget and math behavior is no longer concentrated in one file.
 
 See [`docs/architecture.md`](./docs/architecture.md) for the current module map.
+See [`docs/widget-refactor.md`](./docs/widget-refactor.md) for the current widget refactor state.
+See [`AGENT_SCHEMA.md`](./AGENT_SCHEMA.md) for the current widget/settings item schema and dispatch model.
+See [`NEXT_AGENT.md`](./NEXT_AGENT.md) for a practical continuation bootstrap.
 
 ## Smoke Tests
 
@@ -67,6 +70,12 @@ Useful focused smokes:
 /snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-grid-tab-flow.html
 /snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-math-tab-exit.html
 /snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-block-widget-command-split.html
+/snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-widget-leading-backspace.html
+/snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-widget-boundary-containers.html
+/snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-widget-pointer-entry.html
+/snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-settings-gear-visibility.html
+/snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-settings-gear-scroll-anchor.html
+/snap/bin/chromium --headless --disable-gpu --virtual-time-budget=12000 --dump-dom http://127.0.0.1:4179/smoke-settings-gear-tab-stability.html
 ```
 
 Expected result is `data-result="pass"` in the dumped DOM.

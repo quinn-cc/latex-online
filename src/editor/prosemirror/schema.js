@@ -52,6 +52,7 @@ function getMathDomAttrs(node, variant) {
   return {
     class: className,
     [dataAttributeName]: "true",
+    ...(variant === "inline" ? { "data-widget-root": "inline_math" } : {}),
     "data-math-id": node.attrs.id,
     "data-latex": node.attrs.latex,
     "data-math-font-family": normalizeMathFontFamily(node.attrs.fontFamily),
@@ -190,6 +191,7 @@ function tableDomAttrs(node) {
     "table",
     {
       class: "pm-table",
+      "data-widget-root": "table",
       "data-table-style": normalizeTableStyle(node.attrs.tableStyle),
     },
     ["tbody", 0],
@@ -211,6 +213,7 @@ function alignBlockDomAttrs(node) {
     "table",
     {
       class: "pm-align-block",
+      "data-widget-root": "align",
       "data-align-block": "true",
       "data-align-group-count": String(groupCount),
       style: `--align-column-count: ${groupCount * 2};`,
@@ -229,6 +232,7 @@ function gatherBlockDomAttrs(node) {
     "table",
     {
       class: "pm-gather-block",
+      "data-widget-root": "gather",
       "data-gather-block": "true",
       "data-gather-column-count": String(columnCount),
       style: `--gather-column-count: ${columnCount};`,

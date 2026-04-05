@@ -251,7 +251,7 @@ async function initializeApp() {
       },
     });
     backslashMenuUi.render(controller.getActiveBackslashMenuState());
-    slashItemSettingsUi.render(controller.getActiveSlashItemState());
+    slashItemSettingsUi.render(controller.getStableSlashItemState());
     documentUi.renderDocumentState(documentController.getState());
 
     const persistCurrentState = () => {

@@ -926,7 +926,8 @@ button:focus-visible,
   outline: none;
 }
 
-.pm-align-block:focus-within {
+.pm-align-block:focus-within,
+.pm-align-block.is-widget-active {
   border-color: rgba(97, 77, 57, 0.22);
   background: rgba(255, 255, 255, 0.5);
 }
@@ -956,11 +957,13 @@ button:focus-visible,
   text-decoration: none;
 }
 
-.pm-align-block:focus-within .pm-align-row + .pm-align-row > .pm-align-math {
+.pm-align-block:focus-within .pm-align-row + .pm-align-row > .pm-align-math,
+.pm-align-block.is-widget-active .pm-align-row + .pm-align-row > .pm-align-math {
   border-top-color: rgba(97, 77, 57, 0.18);
 }
 
-.pm-align-block:focus-within .pm-align-math {
+.pm-align-block:focus-within .pm-align-math,
+.pm-align-block.is-widget-active .pm-align-math {
   border-color: rgba(97, 77, 57, 0.18);
   background: rgba(255, 252, 248, 0.82);
 }
@@ -1049,7 +1052,8 @@ button:focus-visible,
   outline: none;
 }
 
-.pm-gather-block:focus-within {
+.pm-gather-block:focus-within,
+.pm-gather-block.is-widget-active {
   border-color: rgba(97, 77, 57, 0.22);
   background: rgba(255, 255, 255, 0.5);
 }
@@ -1080,11 +1084,13 @@ button:focus-visible,
   text-align: center;
 }
 
-.pm-gather-block:focus-within .pm-gather-row + .pm-gather-row > .pm-gather-math {
+.pm-gather-block:focus-within .pm-gather-row + .pm-gather-row > .pm-gather-math,
+.pm-gather-block.is-widget-active .pm-gather-row + .pm-gather-row > .pm-gather-math {
   border-top-color: rgba(97, 77, 57, 0.18);
 }
 
-.pm-gather-block:focus-within .pm-gather-math {
+.pm-gather-block:focus-within .pm-gather-math,
+.pm-gather-block.is-widget-active .pm-gather-math {
   border-color: rgba(97, 77, 57, 0.18);
   background: rgba(255, 252, 248, 0.82);
 }
@@ -1208,14 +1214,15 @@ button:focus-visible,
 }
 
 .slash-item-settings {
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: 30;
   pointer-events: none;
+  overflow: visible;
 }
 
 .slash-item-settings-toggle {
-  position: fixed;
+  position: absolute;
   top: var(--slash-item-toggle-top, 0);
   left: var(--slash-item-toggle-left, 0);
   width: 1.35rem;
@@ -1242,7 +1249,7 @@ button:focus-visible,
 }
 
 .slash-item-settings-panel {
-  position: fixed;
+  position: absolute;
   top: var(--slash-item-panel-top, 0);
   left: var(--slash-item-panel-left, 0);
   width: 13.75rem;
@@ -1343,6 +1350,7 @@ button:focus-visible,
 }
 
 .pm-inline-math.is-focused,
+.pm-inline-math.is-widget-active,
 .ProseMirror-selectednode.pm-inline-math {
   outline: 1px solid rgba(97, 77, 57, 0.28);
   outline-offset: 1px;
@@ -1401,6 +1409,7 @@ button:focus-visible,
 }
 
 .pm-display-math.is-focused,
+.pm-display-math.is-widget-active,
 .ProseMirror-selectednode.pm-display-math {
   outline: 1px solid rgba(97, 77, 57, 0.28);
   outline-offset: 1px;
@@ -1446,6 +1455,14 @@ button:focus-visible,
 .pm-display-math math-field::part(menu-toggle),
 .pm-display-math math-field::part(virtual-keyboard-toggle) {
   display: none;
+}
+
+math-field[data-editor-math="true"] {
+  --editor-math-caret-clearance: max(3px, calc(clamp(2px, 0.08em, 10px) + 1px));
+}
+
+math-field[data-editor-math="true"]::part(content) {
+  padding-inline-end: var(--editor-math-caret-clearance);
 }
 
 .load-error code {

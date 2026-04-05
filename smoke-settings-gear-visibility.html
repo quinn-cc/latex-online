@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Settings Gear Visibility Smoke</title>
+  </head>
+  <body data-result="pending">
+    <script type="module">
+      function markStep(step, detail = null) {
+        document.body.dataset.step = step;
+
+        if (detail == null) {
+          delete document.body.dataset.stepDetail;
+          return;
+        }
+
+        document.body.dataset.stepDetail =
+          typeof detail === "string" ? detail : JSON.stringify(detail);
+      }
+
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function assert(condition, message) {
+        if (!condition) {
+          throw new Error(message);
+        }
+      }
+
+      function getSettingsOverlay(doc) {
+        return doc.getElementById("slash-item-settings");
+      }
+
+      function getSettingsToggle(doc) {
+        return doc.getElementById("slash-item-settings-toggle");
+      }
+
+      function getSettingsPanel(doc) {
+        return doc.getElementById("slash-item-settings-panel");
+      }
+
+      function getSettingsForm(doc) {
+        return doc.getElementById("slash-item-settings-form");
+      }
+
+      function pressSettingsButton(button, win, label) {
+        assert(button, `Expected ${label}`);
+        const mouseDown = new win.MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+        });
+        button.dispatchEvent(mouseDown);
+        assert(
+          mouseDown.defaultPrevented,
+          `Expected ${label} mousedown to preserve widget settings context`
+        );
+        button.dispatchEvent(
+          new win.MouseEvent("mouseup", {
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        button.click();
+      }
+
+      function isSettingsPanelOpen(doc) {
+        return Boolean(getSettingsPanel(doc) && !getSettingsPanel(doc).hidden);
+      }
+
+      function isSettingsVisible(doc) {
+        return Boolean(getSettingsOverlay(doc) && !getSettingsOverlay(doc).hidden);
+      }
+
+      function insertCommand(controller, commandName) {
+        controller.view.focus();
+        controller.dispatchTransaction(
+          controller.view.state.tr.insertText(`\\${commandName}`)
+        );
+
+        if (!controller.executeBackslashCommandAtSelection()) {
+          throw new Error(`Expected \\\\${commandName} command to execute`);
+        }
+      }
+
+      let controllerContextPromise = null;
+
+      async function getControllerContext() {
+        if (!controllerContextPromise) {
+          controllerContextPromise = (async () => {
+            const iframe = document.createElement("iframe");
+            iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
+            iframe.style.width = "1280px";
+            iframe.style.height = "900px";
+            document.body.append(iframe);
+
+            await waitFor(
+              () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+            );
+
+            return {
+              iframe,
+              contentWindow: iframe.contentWindow,
+              contentDocument: iframe.contentDocument,
+              controller: iframe.contentWindow.__latexOnlineDebug.controller,
+            };
+          })();
+        }
+
+        return controllerContextPromise;
+      }
+
+      async function withController(run) {
+        const context = await getControllerContext();
+        const { controller, contentWindow, contentDocument } = context;
+
+        controller.clear();
+        await sleep(80);
+        contentWindow.focus();
+
+        return run(controller, contentWindow, contentDocument);
+      }
+
+      async function openSettingsPanel(doc, message) {
+        const toggle = getSettingsToggle(doc);
+        assert(toggle, message);
+        toggle.click();
+        await waitFor(() => isSettingsPanelOpen(doc));
+        return getSettingsPanel(doc);
+      }
+
+      async function assertPanelClosed(doc, message, detail = {}) {
+        markStep("waitPanelClosed", {
+          ...detail,
+          overlayHidden: getSettingsOverlay(doc)?.hidden ?? null,
+          panelHidden: getSettingsPanel(doc)?.hidden ?? null,
+        });
+        await waitFor(() => !isSettingsPanelOpen(doc));
+        assert(!isSettingsPanelOpen(doc), message);
+      }
+
+      async function assertSettingsHidden(doc, message, detail = {}) {
+        markStep("waitHidden", {
+          ...detail,
+          overlayHidden: getSettingsOverlay(doc)?.hidden ?? null,
+          panelHidden: getSettingsPanel(doc)?.hidden ?? null,
+        });
+        await waitFor(() => !isSettingsVisible(doc));
+        await assertPanelClosed(doc, message, detail);
+        assert(!isSettingsVisible(doc), message);
+      }
+
+      async function runAlignScenario() {
+        return withController(async (controller, _contentWindow, contentDocument) => {
+          markStep("align.insert");
+          insertCommand(controller, "align");
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === "align");
+          await waitFor(() => isSettingsVisible(contentDocument));
+
+          const toggle = getSettingsToggle(contentDocument);
+          assert(toggle, "Expected settings toggle for align");
+          await openSettingsPanel(
+            contentDocument,
+            "Expected settings toggle for align"
+          );
+          markStep("align.visible", {
+            activeItem: controller.getActiveSlashItemState(),
+            overlayHidden: getSettingsOverlay(contentDocument)?.hidden ?? null,
+          });
+
+          markStep("align.exit.before", {
+            activeItem: controller.getActiveSlashItemState(),
+            panelHidden: contentDocument.getElementById("slash-item-settings-panel")?.hidden ?? null,
+          });
+          controller.exitFullLineWidgetBoundary(
+            1,
+            controller.view.state.doc.firstChild.firstChild,
+            "after"
+          );
+
+          await assertSettingsHidden(
+            contentDocument,
+            "Expected align settings to hide after leaving the widget",
+            {
+              scenario: "align-exit",
+              activeItem: controller.getActiveSlashItemState(),
+            }
+          );
+
+          return {
+            visibleAfterInsert: true,
+            hiddenAfterExit: true,
+          };
+        });
+      }
+
+      async function runTableTabExitScenario() {
+        return withController(async (controller, _contentWindow, contentDocument) => {
+          markStep("table.tab.insert");
+          insertCommand(controller, "table");
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === "table");
+          await waitFor(() => isSettingsVisible(contentDocument));
+          await openSettingsPanel(
+            contentDocument,
+            "Expected settings toggle before table Tab exit"
+          );
+
+          assert(controller.handleTab(false), "Expected first Tab inside table");
+          assert(controller.handleTab(false), "Expected second Tab inside table");
+          assert(controller.handleTab(false), "Expected third Tab inside table");
+
+          markStep("table.tab.before", {
+            activeItem: controller.getActiveSlashItemState(),
+            overlayHidden: getSettingsOverlay(contentDocument)?.hidden ?? null,
+          });
+          assert(
+            controller.handleTab(false),
+            "Expected Tab to exit the table widget"
+          );
+
+          await assertSettingsHidden(
+            contentDocument,
+            "Expected table settings to hide when Tab exits the widget",
+            {
+              scenario: "table-tab-exit",
+              activeItem: controller.getActiveSlashItemState(),
+            }
+          );
+
+          return {
+            hiddenAfterTabExit: true,
+          };
+        });
+      }
+
+      async function runTableApplyScenario() {
+        return withController(async (controller, _contentWindow, contentDocument) => {
+          markStep("table.apply.insert");
+          insertCommand(controller, "table");
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === "table");
+          await waitFor(() => isSettingsVisible(contentDocument));
+          await openSettingsPanel(
+            contentDocument,
+            "Expected settings toggle for table apply"
+          );
+
+          const rowCountInput = contentDocument.getElementById(
+            "slash-item-table-rowCount"
+          );
+          assert(rowCountInput, "Expected row count input for table settings");
+          rowCountInput.value = "3";
+          rowCountInput.dispatchEvent(
+            new contentDocument.defaultView.Event("input", { bubbles: true })
+          );
+
+          markStep("table.apply.before", {
+            activeItem: controller.getActiveSlashItemState(),
+            panelHidden: getSettingsPanel(contentDocument)?.hidden ?? null,
+          });
+          const applyButton = contentDocument.getElementById("slash-item-settings-apply");
+          pressSettingsButton(
+            applyButton,
+            contentDocument.defaultView,
+            "Apply button"
+          );
+
+          await waitFor(
+            () => controller.resolveSlashItemState({ type: "table", pos: 1 })?.settings?.rowCount === 3
+          );
+          await assertPanelClosed(
+            contentDocument,
+            "Expected Apply to close the settings popup",
+            {
+              scenario: "table-apply",
+              activeItem: controller.resolveSlashItemState({ type: "table", pos: 1 }),
+            }
+          );
+          assert(
+            isSettingsVisible(contentDocument),
+            "Expected gear to remain visible after applying table settings"
+          );
+
+          return {
+            rowCount: controller.resolveSlashItemState({ type: "table", pos: 1 })?.settings?.rowCount ?? null,
+            overlayVisibleAfterApply: true,
+            panelClosedAfterApply: true,
+          };
+        });
+      }
+
+      async function runBlockWidgetApplyScenario(commandName, expectedType, nextColumnCount) {
+        return withController(async (controller, contentWindow, contentDocument) => {
+          markStep(`${expectedType}.apply.insert`);
+          insertCommand(controller, commandName);
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === expectedType);
+          await waitFor(() => isSettingsVisible(contentDocument));
+          await openSettingsPanel(
+            contentDocument,
+            `Expected settings toggle for ${expectedType} apply`
+          );
+
+          const input = contentDocument.getElementById(
+            `slash-item-${expectedType}-columnCount`
+          );
+          assert(input, `Expected column count input for ${expectedType} settings`);
+          input.value = String(nextColumnCount);
+          input.dispatchEvent(
+            new contentWindow.Event("input", { bubbles: true })
+          );
+
+          const widgetPos = controller.getActiveSlashItemState()?.pos;
+          assert(
+            Number.isFinite(widgetPos),
+            `Expected widget position for ${expectedType} apply`
+          );
+
+          markStep(`${expectedType}.apply.before`, {
+            widgetPos,
+            activeItem: controller.getActiveSlashItemState(),
+            panelHidden: getSettingsPanel(contentDocument)?.hidden ?? null,
+          });
+          const applyButton = contentDocument.getElementById("slash-item-settings-apply");
+          pressSettingsButton(
+            applyButton,
+            contentDocument.defaultView,
+            `${expectedType} apply button`
+          );
+
+          await waitFor(() => {
+            const blockNode = controller.view.state.doc.nodeAt(widgetPos);
+
+            if (expectedType === "align") {
+              return blockNode?.type?.name === "align_block"
+                && blockNode?.attrs?.groupCount === nextColumnCount
+                && blockNode?.firstChild?.childCount === nextColumnCount * 2;
+            }
+
+            return blockNode?.type?.name === "gather_block"
+              && blockNode?.attrs?.columnCount === nextColumnCount
+              && blockNode?.firstChild?.childCount === nextColumnCount;
+          });
+          await assertPanelClosed(
+            contentDocument,
+            `Expected Apply to close the ${expectedType} settings popup`,
+            {
+              scenario: `${expectedType}-apply`,
+              activeItem: controller.resolveSlashItemState({
+                type: expectedType,
+                pos: widgetPos,
+              }),
+            }
+          );
+          await waitFor(() => isSettingsVisible(contentDocument));
+          assert(
+            isSettingsVisible(contentDocument),
+            `Expected ${expectedType} gear to remain visible after applying settings`
+          );
+
+          const nextBlock = controller.view.state.doc.nodeAt(widgetPos);
+
+          return {
+            columnCount:
+              expectedType === "align"
+                ? nextBlock?.attrs?.groupCount ?? null
+                : nextBlock?.attrs?.columnCount ?? null,
+            cellCount: nextBlock?.firstChild?.childCount ?? null,
+            overlayVisibleAfterApply: true,
+            panelClosedAfterApply: true,
+          };
+        });
+      }
+
+      async function runTableDeleteScenario() {
+        return withController(async (controller, _contentWindow, contentDocument) => {
+          markStep("table.insert");
+          insertCommand(controller, "table");
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === "table");
+          await waitFor(() => isSettingsVisible(contentDocument));
+          await openSettingsPanel(
+            contentDocument,
+            "Expected settings toggle for table delete"
+          );
+
+          markStep("table.delete.before", {
+            activeItem: controller.getActiveSlashItemState(),
+            panelHidden: getSettingsPanel(contentDocument)?.hidden ?? null,
+          });
+          const tableNode = controller.view.state.doc.firstChild.firstChild;
+          const deleteButton = contentDocument.getElementById("slash-item-settings-delete");
+          assert(deleteButton && !deleteButton.hidden, "Expected visible delete button for table");
+          pressSettingsButton(
+            deleteButton,
+            contentDocument.defaultView,
+            "table delete button"
+          );
+
+          await assertSettingsHidden(
+            contentDocument,
+            "Expected table settings to hide after deleting the widget",
+            {
+              scenario: "table-delete",
+              activeItem: controller.getActiveSlashItemState(),
+            }
+          );
+
+          return {
+            deletedType: tableNode.type.name,
+            hiddenAfterDelete: true,
+          };
+        });
+      }
+
+      async function runBlockWidgetDeleteScenario(commandName, expectedType) {
+        return withController(async (controller, _contentWindow, contentDocument) => {
+          markStep(`${expectedType}.delete.insert`);
+          insertCommand(controller, commandName);
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === expectedType);
+          await waitFor(() => isSettingsVisible(contentDocument));
+          await openSettingsPanel(
+            contentDocument,
+            `Expected settings toggle for ${expectedType} delete`
+          );
+
+          markStep(`${expectedType}.delete.before`, {
+            activeItem: controller.getActiveSlashItemState(),
+            panelHidden: getSettingsPanel(contentDocument)?.hidden ?? null,
+          });
+          const deleteButton = contentDocument.getElementById("slash-item-settings-delete");
+          assert(
+            deleteButton && !deleteButton.hidden,
+            `Expected visible delete button for ${expectedType}`
+          );
+          pressSettingsButton(
+            deleteButton,
+            contentDocument.defaultView,
+            `${expectedType} delete button`
+          );
+
+          await assertSettingsHidden(
+            contentDocument,
+            `Expected ${expectedType} settings to hide after deleting the widget`,
+            {
+              scenario: `${expectedType}-delete`,
+              activeItem: controller.getActiveSlashItemState(),
+            }
+          );
+
+          const firstBlock = controller.view.state.doc.firstChild.firstChild;
+          assert(
+            firstBlock?.type?.name === "paragraph",
+            `Expected paragraph after ${expectedType} widget delete`
+          );
+
+          return {
+            type: expectedType,
+            hiddenAfterDelete: true,
+          };
+        });
+      }
+
+      async function runMathStructureTabExitScenario(latex, expectedType) {
+        return withController(async (controller, _contentWindow, contentDocument) => {
+          markStep(`${expectedType}.tab.insert`);
+          controller.view.focus();
+          const insertion = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            2,
+            2,
+            ""
+          );
+
+          controller.dispatchTransaction(insertion);
+          await waitFor(() => controller.getFocusedOrPendingMathTarget());
+
+          const mathTarget = controller.getFocusedOrPendingMathTarget();
+          const mathView = controller.getMathView(mathTarget.id);
+
+          assert(mathView, `Expected math view for ${expectedType} blur scenario`);
+          assert(
+            mathView.mathField.insert(latex, {
+              format: "latex",
+              mode: "math",
+              selectionMode: "placeholder",
+            }),
+            `Expected ${expectedType} environment insertion`
+          );
+          mathView.notifySettingsItemChange(true);
+          controller.emitSlashItemState();
+
+          await waitFor(() => {
+            const hasFocus = mathView.hasSettingsInteractionFocus?.() === true;
+            markStep(`${expectedType}.tab.waitFocus`, {
+              hasFocus,
+              activeMathId: controller.activeMathId ?? null,
+              activeElement: contentDocument.activeElement?.tagName ?? null,
+            });
+            return hasFocus;
+          });
+          await waitFor(() => {
+            const activeItem = controller.getActiveSlashItemState();
+            markStep(`${expectedType}.tab.waitItem`, {
+              activeItem,
+              activeMathId: controller.activeMathId ?? null,
+              overlayHidden: getSettingsOverlay(contentDocument)?.hidden ?? null,
+            });
+            return activeItem?.type === expectedType;
+          });
+          await waitFor(() => isSettingsVisible(contentDocument));
+          await openSettingsPanel(
+            contentDocument,
+            `Expected settings toggle before ${expectedType} Tab exit`
+          );
+
+          assert(
+            mathView.selectMathArrayCell(1, 1),
+            `Expected to select the last ${expectedType} cell before tab exit`
+          );
+
+          markStep(`${expectedType}.tab.before`, {
+            activeItem: controller.getActiveSlashItemState(),
+            overlayHidden: getSettingsOverlay(contentDocument)?.hidden ?? null,
+          });
+          assert(
+            mathView.handleTabNavigation("forward"),
+            `Expected Tab to exit ${expectedType}`
+          );
+
+          await assertSettingsHidden(
+            contentDocument,
+            `Expected ${expectedType} settings to hide when Tab exits the math widget`,
+            {
+              scenario: `${expectedType}-tab-exit`,
+              activeItem: controller.getActiveSlashItemState(),
+              activeMathId: controller.activeMathId ?? null,
+              activeElement: contentDocument.activeElement?.tagName ?? null,
+              modelPosition: mathView.mathField._mathfield?.model?.position ?? null,
+              parentEnvironment:
+                mathView.mathField._mathfield?.model?.parentEnvironment?.environmentName
+                ?? mathView.mathField._mathfield?.model?.parentEnvironment?.type
+                ?? null,
+              parentCell: mathView.mathField._mathfield?.model?.parentCell ?? null,
+              selection: mathView.mathField.selection ?? null,
+            }
+          );
+
+          return {
+            type: expectedType,
+            hiddenAfterTabExit: true,
+          };
+        });
+      }
+
+      async function runMathStructureScenario(latex, expectedType) {
+        return withController(async (controller, _contentWindow, contentDocument) => {
+          markStep(`${expectedType}.insert`);
+          controller.view.focus();
+          const insertion = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            2,
+            2,
+            ""
+          );
+
+          controller.dispatchTransaction(insertion);
+          await waitFor(() => controller.getFocusedOrPendingMathTarget());
+
+          const mathTarget = controller.getFocusedOrPendingMathTarget();
+          const mathView = controller.getMathView(mathTarget.id);
+
+          assert(mathView, `Expected math view for ${expectedType}`);
+          assert(
+            mathView.mathField.insert(latex, {
+              format: "latex",
+              mode: "math",
+              selectionMode: "placeholder",
+            }),
+            `Expected ${expectedType} environment insertion`
+          );
+          mathView.notifySettingsItemChange(true);
+          controller.emitSlashItemState();
+
+          await waitFor(() => {
+            const hasFocus = mathView.hasSettingsInteractionFocus?.() === true;
+            markStep(`${expectedType}.waitFocus`, {
+              hasFocus,
+              pendingMathFocusId: controller.pendingMathFocusId,
+              activeItem: controller.getActiveSlashItemState(),
+            });
+            return hasFocus;
+          });
+          await waitFor(() => {
+            const activeItem = controller.getActiveSlashItemState();
+            markStep(`${expectedType}.waitItem`, {
+              activeItem,
+              hasOverlay: Boolean(getSettingsOverlay(contentDocument)),
+              overlayHidden: getSettingsOverlay(contentDocument)?.hidden ?? null,
+            });
+            return activeItem?.type === expectedType;
+          });
+          await waitFor(() => {
+            const activeItem = controller.getActiveSlashItemState();
+            markStep(`${expectedType}.waitVisible`, {
+              activeItem,
+              overlayHidden: getSettingsOverlay(contentDocument)?.hidden ?? null,
+              panelHidden: getSettingsPanel(contentDocument)?.hidden ?? null,
+            });
+            return isSettingsVisible(contentDocument);
+          });
+
+          await openSettingsPanel(
+            contentDocument,
+            `Expected settings toggle for ${expectedType}`
+          );
+          markStep(`${expectedType}.visible`, {
+            activeItem: controller.getActiveSlashItemState(),
+            overlayHidden: getSettingsOverlay(contentDocument)?.hidden ?? null,
+          });
+
+          markStep(`${expectedType}.exit.before`, {
+            activeItem: controller.getActiveSlashItemState(),
+            panelHidden: getSettingsPanel(contentDocument)?.hidden ?? null,
+          });
+          assert(
+            controller.commitAndExitMathNode(mathTarget.pos, "after"),
+            `Expected to exit ${expectedType} math widget`
+          );
+
+          await assertSettingsHidden(
+            contentDocument,
+            `Expected ${expectedType} settings to hide after leaving the structure`,
+            {
+              scenario: `${expectedType}-exit`,
+              activeItem: controller.getActiveSlashItemState(),
+              activeMathId: controller.activeMathId ?? null,
+              activeElement: contentDocument.activeElement?.tagName ?? null,
+            }
+          );
+
+          return {
+            type: expectedType,
+            hiddenAfterExit: true,
+          };
+        });
+      }
+
+      async function runMathStructureDeleteScenario(
+        latex,
+        expectedType,
+        removedLatexFragment
+      ) {
+        return withController(async (controller, _contentWindow, contentDocument) => {
+          markStep(`${expectedType}.delete.insert`);
+          controller.view.focus();
+          const insertion = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            2,
+            2,
+            ""
+          );
+
+          controller.dispatchTransaction(insertion);
+          await waitFor(() => controller.getFocusedOrPendingMathTarget());
+
+          const mathTarget = controller.getFocusedOrPendingMathTarget();
+          const mathView = controller.getMathView(mathTarget.id);
+          assert(mathView, `Expected math view for ${expectedType} delete`);
+          assert(
+            mathView.mathField.insert(latex, {
+              format: "latex",
+              mode: "math",
+              selectionMode: "placeholder",
+            }),
+            `Expected ${expectedType} environment insertion`
+          );
+          mathView.notifySettingsItemChange(true);
+          controller.emitSlashItemState();
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === expectedType);
+          await waitFor(() => isSettingsVisible(contentDocument));
+          await openSettingsPanel(
+            contentDocument,
+            `Expected settings toggle for ${expectedType} delete`
+          );
+
+          const deleteButton = contentDocument.getElementById("slash-item-settings-delete");
+          assert(
+            deleteButton && !deleteButton.hidden,
+            `Expected visible delete button for ${expectedType}`
+          );
+          pressSettingsButton(
+            deleteButton,
+            contentDocument.defaultView,
+            `${expectedType} delete button`
+          );
+
+          await assertSettingsHidden(
+            contentDocument,
+            `Expected ${expectedType} settings to hide after deleting the widget`,
+            {
+              scenario: `${expectedType}-delete`,
+              activeItem: controller.getActiveSlashItemState(),
+            }
+          );
+
+          const firstBlock = controller.view.state.doc.firstChild.firstChild;
+          assert(firstBlock?.type?.name === "paragraph", "Expected paragraph after math widget delete");
+          const inlineMathNodes = firstBlock?.content?.content?.filter?.(
+            (node) => node.type?.name === "inline_math"
+          ) ?? [];
+          assert(
+            inlineMathNodes.length === 1,
+            `Expected ${expectedType} delete button to preserve the enclosing inline math widget`
+          );
+          const remainingMathView = controller.getMathView(mathTarget.id);
+          assert(
+            remainingMathView,
+            `Expected ${expectedType} delete button to keep the math view mounted`
+          );
+          const remainingLatex = remainingMathView.mathField?.getValue?.() ?? "";
+          assert(
+            !remainingLatex.includes(removedLatexFragment),
+            `Expected ${expectedType} delete button to remove only the math structure`
+          );
+
+          return {
+            type: expectedType,
+            hiddenAfterDelete: true,
+            inlineMathPreserved: true,
+          };
+        });
+      }
+
+      try {
+        const align = await runAlignScenario();
+        const alignApply = await runBlockWidgetApplyScenario("align", "align", 2);
+        const alignDelete = await runBlockWidgetDeleteScenario("align", "align");
+        const gatherApply = await runBlockWidgetApplyScenario("gather", "gather", 2);
+        const gatherDelete = await runBlockWidgetDeleteScenario("gather", "gather");
+        const tableTabExit = await runTableTabExitScenario();
+        const tableApply = await runTableApplyScenario();
+        const table = await runTableDeleteScenario();
+        const casesTabExit = await runMathStructureTabExitScenario(
+          "\\begin{cases}\n\\placeholder{} & \\placeholder{} \\\\\n\\placeholder{} & \\placeholder{}\n\\end{cases}",
+          "cases"
+        );
+        const casesDelete = await runMathStructureDeleteScenario(
+          "\\begin{cases}\n\\placeholder{} & \\placeholder{} \\\\\n\\placeholder{} & \\placeholder{}\n\\end{cases}",
+          "cases",
+          "\\begin{cases}"
+        );
+        const matrixDelete = await runMathStructureDeleteScenario(
+          "\\begin{bmatrix}\n\\placeholder{} & \\placeholder{} \\\\\n\\placeholder{} & \\placeholder{}\n\\end{bmatrix}",
+          "matrix",
+          "\\begin{bmatrix}"
+        );
+        const cases = await runMathStructureScenario(
+          "\\begin{cases}\n\\placeholder{} & \\placeholder{} \\\\\n\\placeholder{} & \\placeholder{}\n\\end{cases}",
+          "cases"
+        );
+        const matrix = await runMathStructureScenario(
+          "\\begin{bmatrix}\n\\placeholder{} & \\placeholder{} \\\\\n\\placeholder{} & \\placeholder{}\n\\end{bmatrix}",
+          "matrix"
+        );
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.align = JSON.stringify(align);
+        document.body.dataset.alignApply = JSON.stringify(alignApply);
+        document.body.dataset.alignDelete = JSON.stringify(alignDelete);
+        document.body.dataset.gatherApply = JSON.stringify(gatherApply);
+        document.body.dataset.gatherDelete = JSON.stringify(gatherDelete);
+        document.body.dataset.tableTabExit = JSON.stringify(tableTabExit);
+        document.body.dataset.tableApply = JSON.stringify(tableApply);
+        document.body.dataset.table = JSON.stringify(table);
+        document.body.dataset.casesTabExit = JSON.stringify(casesTabExit);
+        document.body.dataset.casesDelete = JSON.stringify(casesDelete);
+        document.body.dataset.matrixDelete = JSON.stringify(matrixDelete);
+        document.body.dataset.cases = JSON.stringify(cases);
+        document.body.dataset.matrix = JSON.stringify(matrix);
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

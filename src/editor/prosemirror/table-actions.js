@@ -1,4 +1,3 @@
-import { TextSelection } from "prosemirror-state";
 import {
   createResizedTableNode,
   createTableNodeWithInsertedRow,
@@ -12,6 +11,53 @@ import { getTableParagraphAttrs, setStoredMarksFromToolbarState } from "./state-
 import { buildReplaceTableNode } from "./transforms/grid-structural.js";
 
 export const tableActionMethods = {
+  moveToTableCell(
+    tableContext,
+    nextRowIndex,
+    nextCellIndex,
+    {
+      entryMode = "collapse",
+      debugType = "controller.moveToTableCell",
+      debugDetail = {},
+    } = {}
+  ) {
+    if (!tableContext) {
+      return false;
+    }
+
+    const nextSelectionPos = findTableCellTextPos(
+      tableContext.table.node,
+      tableContext.table.pos,
+      nextRowIndex,
+      nextCellIndex
+    );
+    const target = this.createTextEntryTarget(nextSelectionPos, 1);
+
+    if (!target) {
+      return false;
+    }
+
+    const didMove = this.applyWidgetEntryTarget(target, {
+      entryMode,
+      toolbarState: this.getCurrentTextToolbarState(),
+    });
+
+    if (!didMove) {
+      return false;
+    }
+
+    this.debugLog(debugType, {
+      tablePos: tableContext.table.pos,
+      rowIndex: tableContext.row.index,
+      cellIndex: tableContext.cell.index,
+      nextRowIndex,
+      nextCellIndex,
+      entryMode,
+      ...debugDetail,
+    });
+    return true;
+  },
+
   moveToNextTableCellOrExit(tableContext = getTableContext(this.view.state)) {
     if (!tableContext) {
       return false;
@@ -23,51 +69,17 @@ export const tableActionMethods = {
     const columnCount = tableContext.row.node.childCount;
 
     if (cellIndex < columnCount - 1) {
-      const nextSelectionPos = findTableCellTextPos(
-        tableContext.table.node,
-        tableContext.table.pos,
-        rowIndex,
-        cellIndex + 1
-      );
-      const tr = this.view.state.tr.setSelection(
-        TextSelection.near(this.view.state.tr.doc.resolve(nextSelectionPos), 1)
-      );
-
-      setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-      this.debugLog("controller.moveToNextTableCell", {
-        tablePos: tableContext.table.pos,
-        rowIndex,
-        cellIndex,
-        nextRowIndex: rowIndex,
-        nextCellIndex: cellIndex + 1,
+      return this.moveToTableCell(tableContext, rowIndex, cellIndex + 1, {
+        entryMode: "tab",
+        debugType: "controller.moveToNextTableCell",
       });
-      this.dispatchTransaction(tr);
-      this.focus();
-      return true;
     }
 
     if (rowIndex < rowCount - 1) {
-      const nextSelectionPos = findTableCellTextPos(
-        tableContext.table.node,
-        tableContext.table.pos,
-        rowIndex + 1,
-        0
-      );
-      const tr = this.view.state.tr.setSelection(
-        TextSelection.near(this.view.state.tr.doc.resolve(nextSelectionPos), 1)
-      );
-
-      setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-      this.debugLog("controller.moveToNextTableCell", {
-        tablePos: tableContext.table.pos,
-        rowIndex,
-        cellIndex,
-        nextRowIndex: rowIndex + 1,
-        nextCellIndex: 0,
+      return this.moveToTableCell(tableContext, rowIndex + 1, 0, {
+        entryMode: "tab",
+        debugType: "controller.moveToNextTableCell",
       });
-      this.dispatchTransaction(tr);
-      this.focus();
-      return true;
     }
 
     return this.exitFullLineWidgetBoundary(
@@ -93,53 +105,25 @@ export const tableActionMethods = {
     const cellIndex = tableContext.cell.index;
 
     if (cellIndex > 0) {
-      const previousSelectionPos = findTableCellTextPos(
-        tableContext.table.node,
-        tableContext.table.pos,
-        rowIndex,
-        cellIndex - 1
-      );
-      const tr = this.view.state.tr.setSelection(
-        TextSelection.near(this.view.state.tr.doc.resolve(previousSelectionPos), 1)
-      );
-
-      setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-      this.debugLog("controller.moveToPreviousTableCell", {
-        tablePos: tableContext.table.pos,
-        rowIndex,
-        cellIndex,
-        nextRowIndex: rowIndex,
-        nextCellIndex: cellIndex - 1,
+      return this.moveToTableCell(tableContext, rowIndex, cellIndex - 1, {
+        entryMode: "tab",
+        debugType: "controller.moveToPreviousTableCell",
       });
-      this.dispatchTransaction(tr);
-      this.focus();
-      return true;
     }
 
     if (rowIndex > 0) {
       const previousRowIndex = rowIndex - 1;
       const previousRow = tableContext.table.node.child(previousRowIndex);
-      const previousSelectionPos = findTableCellTextPos(
-        tableContext.table.node,
-        tableContext.table.pos,
-        previousRowIndex,
-        previousRow.childCount - 1
-      );
-      const tr = this.view.state.tr.setSelection(
-        TextSelection.near(this.view.state.tr.doc.resolve(previousSelectionPos), 1)
-      );
 
-      setStoredMarksFromToolbarState(tr, this.getCurrentTextToolbarState());
-      this.debugLog("controller.moveToPreviousTableCell", {
-        tablePos: tableContext.table.pos,
-        rowIndex,
-        cellIndex,
-        nextRowIndex: previousRowIndex,
-        nextCellIndex: previousRow.childCount - 1,
-      });
-      this.dispatchTransaction(tr);
-      this.focus();
-      return true;
+      return this.moveToTableCell(
+        tableContext,
+        previousRowIndex,
+        previousRow.childCount - 1,
+        {
+          entryMode: "tab",
+          debugType: "controller.moveToPreviousTableCell",
+        }
+      );
     }
 
     return this.exitFullLineWidgetBoundary(
@@ -322,7 +306,8 @@ export const tableActionMethods = {
       return false;
     }
 
-    return this.replaceWidgetBlockWithParagraph(tablePos, tableNode, {
+    return this.deleteWidgetAt(tablePos, {
+      trigger: "direct",
       debugType: options.debugType ?? "controller.deleteTableAt",
       debugDetail: {
         tablePos,

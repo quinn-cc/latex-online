@@ -323,6 +323,47 @@ function unionRects(left, right) {
   };
 }
 
+function getAncestorScrollOffset(element) {
+  let top = 0;
+  let left = 0;
+  let current = element?.parentElement ?? null;
+
+  while (current) {
+    top += current.scrollTop ?? 0;
+    left += current.scrollLeft ?? 0;
+    current = current.parentElement;
+  }
+
+  return { top, left };
+}
+
+export function toMathFieldClientRect(mathField, rect) {
+  if (!rect || !mathField?.getBoundingClientRect) {
+    return null;
+  }
+
+  const mathFieldClientRect = mathField.getBoundingClientRect();
+
+  if (!Number.isFinite(mathFieldClientRect.top) || !Number.isFinite(mathFieldClientRect.left)) {
+    return null;
+  }
+
+  const scrollOffset = getAncestorScrollOffset(mathField);
+  // MathLive bounds stay in document/layout space when an ancestor scroller moves.
+  // Subtract the accumulated ancestor scroll to get a viewport client rect.
+  const deltaTop = -scrollOffset.top;
+  const deltaLeft = -scrollOffset.left;
+
+  return {
+    top: rect.top + deltaTop,
+    right: rect.right + deltaLeft,
+    bottom: rect.bottom + deltaTop,
+    left: rect.left + deltaLeft,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
 function getCellRect(mathField, model, environment, rowIndex, columnIndex) {
   const offsetRange = getCellOffsetRange(model, environment, rowIndex, columnIndex);
 
@@ -374,6 +415,21 @@ function getEnvironmentSelectionRange(model, environment) {
 
   const start = model.offsetOf(environment.firstChild ?? environment);
   return Number.isFinite(start) ? [start, end] : null;
+}
+
+function isCollapsedSelectionWithinEnvironment(model, environment) {
+  if (!model?.selectionIsCollapsed) {
+    return false;
+  }
+
+  const selectionRange = getEnvironmentSelectionRange(model, environment);
+
+  if (!Array.isArray(selectionRange) || selectionRange.length !== 2) {
+    return false;
+  }
+
+  const [start, end] = selectionRange;
+  return model.position >= start && model.position < end;
 }
 
 function buildItemSettings(definition, environment) {
@@ -458,9 +514,144 @@ export function isMathArrayEnvironment(atom) {
   return Boolean(atom && atom.type === "array" && getMathArrayStructureDefinitionForEnvironment(atom));
 }
 
+function getMathArrayEnvironmentFromAtom(atom) {
+  let current = atom ?? null;
+
+  while (current && !isMathArrayEnvironment(current)) {
+    current = current.parent ?? null;
+  }
+
+  return isMathArrayEnvironment(current) ? current : null;
+}
+
+function normalizeModelOffset(model, offset) {
+  const maxOffset = Number.isFinite(model?.lastOffset) ? model.lastOffset : 0;
+  const normalizedOffset = Number(offset);
+
+  if (!Number.isFinite(normalizedOffset)) {
+    return null;
+  }
+
+  return clamp(Math.trunc(normalizedOffset), 0, maxOffset);
+}
+
+function pushOffsetCandidate(candidates, seen, model, offset) {
+  const normalizedOffset = normalizeModelOffset(model, offset);
+
+  if (normalizedOffset == null || seen.has(normalizedOffset)) {
+    return;
+  }
+
+  seen.add(normalizedOffset);
+  candidates.push(normalizedOffset);
+}
+
+function getMathArraySelectionOffsetCandidates(model) {
+  if (!model) {
+    return [];
+  }
+
+  const candidates = [];
+  const seen = new Set();
+  const selectionRanges = Array.isArray(model.selection?.ranges) ? model.selection.ranges : [];
+
+  pushOffsetCandidate(candidates, seen, model, model.position);
+
+  if (model.selectionIsCollapsed) {
+    pushOffsetCandidate(candidates, seen, model, model.position + 1);
+    return candidates;
+  }
+
+  pushOffsetCandidate(candidates, seen, model, model.position + 1);
+
+  for (const range of selectionRanges) {
+    if (!Array.isArray(range) || range.length !== 2) {
+      continue;
+    }
+
+    const [start, end] = range;
+
+    pushOffsetCandidate(candidates, seen, model, start);
+    pushOffsetCandidate(candidates, seen, model, end);
+    pushOffsetCandidate(candidates, seen, model, start + 1);
+
+    if (end > start) {
+      pushOffsetCandidate(candidates, seen, model, end - 1);
+    }
+  }
+
+  return candidates;
+}
+
+function getMathArrayEnvironmentAtOffset(model, offset) {
+  const normalizedOffset = normalizeModelOffset(model, offset);
+
+  if (normalizedOffset == null) {
+    return null;
+  }
+
+  return getMathArrayEnvironmentFromAtom(model.at(normalizedOffset));
+}
+
+function isMathArrayCellIndex(environment, value) {
+  return Array.isArray(value)
+    && value.length === 2
+    && Number.isInteger(value[0])
+    && Number.isInteger(value[1])
+    && value[0] >= 0
+    && value[1] >= 0
+    && value[0] < (environment?.rowCount ?? 0)
+    && value[1] < (environment?.colCount ?? 0);
+}
+
+function getActiveMathArrayCell(model, environment) {
+  if (!model || !environment) {
+    return null;
+  }
+
+  if (isMathArrayCellIndex(environment, model.parentCell)) {
+    return model.parentCell;
+  }
+
+  if (model.selectionIsCollapsed && !isCollapsedSelectionWithinEnvironment(model, environment)) {
+    return null;
+  }
+
+  for (const offset of getMathArraySelectionOffsetCandidates(model)) {
+    const cell = typeof model.getParentCell === "function"
+      ? model.getParentCell(offset)
+      : null;
+
+    if (isMathArrayCellIndex(environment, cell)) {
+      return cell;
+    }
+  }
+
+  return null;
+}
+
 export function getActiveMathArrayEnvironment(model) {
   const currentEnvironment = model?.parentEnvironment;
-  return isMathArrayEnvironment(currentEnvironment) ? currentEnvironment : null;
+
+  if (isMathArrayEnvironment(currentEnvironment)) {
+    return currentEnvironment;
+  }
+
+  for (const offset of getMathArraySelectionOffsetCandidates(model)) {
+    const environment = getMathArrayEnvironmentAtOffset(model, offset);
+
+    if (!environment) {
+      continue;
+    }
+
+    if (model?.selectionIsCollapsed && !isCollapsedSelectionWithinEnvironment(model, environment)) {
+      continue;
+    }
+
+    return environment;
+  }
+
+  return null;
 }
 
 export function normalizeMathArraySettings(type, settings, fallbackSettings = {}) {
@@ -590,7 +781,7 @@ export function getActiveMathArrayItemState(mathField, { mathId = null, pos = nu
   }
 
   const { model, environment, definition } = context;
-  const [rowIndex = 0, columnIndex = 0] = model.parentCell ?? [0, 0];
+  const [rowIndex = 0, columnIndex = 0] = getActiveMathArrayCell(model, environment) ?? [0, 0];
   const normalizedRowIndex = clamp(rowIndex, 0, Math.max(0, environment.rowCount - 1));
   const normalizedColumnIndex = clamp(columnIndex, 0, Math.max(0, environment.colCount - 1));
 
@@ -624,7 +815,7 @@ export function getMathArrayEnvironmentRect(mathField, expectedType = null) {
     }
   }
 
-  return rect;
+  return toMathFieldClientRect(mathField, rect);
 }
 
 export function selectMathArrayCell(mathField, rowIndex, columnIndex, direction = "forward") {
@@ -764,4 +955,34 @@ export function resizeActiveMathArrayEnvironment(
     clamp(anchorRowIndex, 0, nextRowCount - 1),
     clamp(anchorColumnIndex, 0, nextColumnCount - 1)
   );
+}
+
+export function deleteActiveMathArrayEnvironment(
+  mathField,
+  {
+    expectedType = null,
+  } = {}
+) {
+  const context = getActiveMathArrayContext(mathField, { expectedType });
+
+  if (!context) {
+    return false;
+  }
+
+  const { model, environment, definition } = context;
+  const selectionRange = getEnvironmentSelectionRange(
+    model,
+    getMathArrayReplacementTarget(environment, definition)
+  );
+
+  if (!selectionRange) {
+    return false;
+  }
+
+  mathField.selection = {
+    ranges: [selectionRange],
+    direction: "forward",
+  };
+
+  return mathField.executeCommand("deleteBackward");
 }

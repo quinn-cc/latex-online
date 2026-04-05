@@ -6,13 +6,14 @@ import {
   getMathExtensionMenuState,
 } from "./math-extensions/index.js";
 import {
+  deleteActiveMathArrayEnvironment,
   getActiveMathArrayItemState,
   getMathArrayEnvironmentRect,
   resizeActiveMathArrayEnvironment,
+  toMathFieldClientRect,
 } from "./math-extensions/array-structures.js";
 import {
   handleMathKeyDown,
-  handleMathMoveOut,
   handleMathTabNavigation,
   insertMathSpace,
   isGridMathVariant,
@@ -45,11 +46,13 @@ class MathNodeView {
     this.isMounted = false;
     this.isDestroyed = false;
     this.pendingExitDirection = null;
-    this.pendingBoundaryDirection = null;
     this.isExiting = false;
     this.pendingFocusEdge = null;
+    this.pendingFocusOffset = null;
+    this.pendingFocusSelectionMode = "collapse";
     this.pendingFocusAttempts = 0;
     this.pendingFocusFrame = 0;
+    this.pendingBlurFrame = 0;
     this.activeSettingsItemSignature = null;
 
     const isInlineVariant = variant === "inline";
@@ -69,6 +72,8 @@ class MathNodeView {
     this.dom.setAttribute("data-math-id", node.attrs.id);
 
     this.mathField = new options.MathfieldElementClass();
+    this.mathField.setAttribute("data-editor-math", "true");
+    this.mathField.setAttribute("data-editor-math-variant", variant);
     this.mathField.defaultMode = isInlineVariant ? "inline-math" : "math";
     this.mathField.smartMode = false;
     this.mathField.mathVirtualKeyboardPolicy = "manual";
@@ -92,7 +97,6 @@ class MathNodeView {
     this.handleBeforeInput = this.handleBeforeInput.bind(this);
     this.handleInput = this.handleInput.bind(this);
     this.handleKeyDown = this.handleKeyDown.bind(this);
-    this.handleMoveOut = this.handleMoveOut.bind(this);
     this.handleMount = this.handleMount.bind(this);
     this.handleSelectionChange = this.handleSelectionChange.bind(this);
     this.handleUnmount = this.handleUnmount.bind(this);
@@ -106,7 +110,6 @@ class MathNodeView {
     this.mathField.addEventListener("input", this.handleInput);
     this.mathField.addEventListener("change", this.handleInput);
     this.mathField.addEventListener("keydown", this.handleKeyDown, true);
-    this.mathField.addEventListener("move-out", this.handleMoveOut);
     this.mathField.addEventListener("mount", this.handleMount);
     this.mathField.addEventListener("selection-change", this.handleSelectionChange);
     this.mathField.addEventListener("unmount", this.handleUnmount);
@@ -180,8 +183,8 @@ class MathNodeView {
 
   destroy() {
     this.isDestroyed = true;
+    this.cancelPendingBlur();
     this.cancelPendingFocus();
-    this.pendingBoundaryDirection = null;
     this.pendingExitDirection = null;
     this.isExiting = false;
     this.dom.removeEventListener("mousedown", this.handleMouseDown);
@@ -193,7 +196,6 @@ class MathNodeView {
     this.mathField.removeEventListener("input", this.handleInput);
     this.mathField.removeEventListener("change", this.handleInput);
     this.mathField.removeEventListener("keydown", this.handleKeyDown, true);
-    this.mathField.removeEventListener("move-out", this.handleMoveOut);
     this.mathField.removeEventListener("mount", this.handleMount);
     this.mathField.removeEventListener("selection-change", this.handleSelectionChange);
     this.mathField.removeEventListener("unmount", this.handleUnmount);
@@ -207,19 +209,104 @@ class MathNodeView {
     });
   }
 
-  focusAtEdge(edge = "start") {
+  focusForEntry({ edge = "start", offset = null, selectionMode = "collapse" } = {}) {
     this.pendingFocusEdge = edge;
+    this.pendingFocusOffset = Number.isFinite(offset) ? offset : null;
+    this.pendingFocusSelectionMode = selectionMode;
     this.pendingFocusAttempts = 0;
     this.options.debug?.("math.focusAtEdge.request", {
       id: this.node.attrs.id,
       pos: this.safeGetPos(),
       edge,
+      offset: this.pendingFocusOffset,
+      selectionMode,
       variant: this.variant,
       isMounted: this.isMounted,
       domConnected: this.dom.isConnected,
       mathFieldConnected: this.mathField.isConnected,
     });
     this.schedulePendingFocus();
+  }
+
+  focusAtEdge(edge = "start") {
+    this.focusForEntry({
+      edge,
+      selectionMode: "collapse",
+    });
+  }
+
+  focusAtOffset(offset) {
+    this.focusForEntry({
+      edge: offset <= 0 ? "start" : "end",
+      offset,
+      selectionMode: "collapse",
+    });
+  }
+
+  getPointerContentRect() {
+    const content =
+      this.mathField.shadowRoot?.querySelector('[part="content"]') ?? null;
+
+    if (content?.getBoundingClientRect) {
+      return content.getBoundingClientRect();
+    }
+
+    return this.mathField.getBoundingClientRect();
+  }
+
+  resolvePointerFocusOffset(event) {
+    if (!Number.isFinite(event?.clientX) || !Number.isFinite(event?.clientY)) {
+      return null;
+    }
+
+    const mathFieldRect = this.mathField.getBoundingClientRect();
+    const bias = event.clientX < mathFieldRect.left
+      ? -1
+      : event.clientX > mathFieldRect.right
+        ? 1
+        : 0;
+    const offset = this.mathField.getOffsetFromPoint(event.clientX, event.clientY, {
+      bias,
+    });
+
+    if (!Number.isFinite(offset) || offset < 0) {
+      return null;
+    }
+
+    return Math.max(0, Math.min(this.mathField.lastOffset, offset));
+  }
+
+  getPointerEntryContext(event) {
+    if (event?.button != null && event.button !== 0) {
+      return null;
+    }
+
+    const offset = this.resolvePointerFocusOffset(event);
+
+    if (offset == null) {
+      return null;
+    }
+
+    const contentRect = this.getPointerContentRect();
+    const isOutsideContent = Number.isFinite(contentRect?.left)
+      && Number.isFinite(contentRect?.right)
+      && (event.clientX <= contentRect.left || event.clientX >= contentRect.right);
+    const isContainerTarget = event.target === this.dom || event.target === this.mathField;
+
+    if (!isContainerTarget && !isOutsideContent) {
+      return null;
+    }
+
+    return {
+      offset,
+      isOutsideContent,
+      targetRole:
+        event.target === this.dom
+          ? "container"
+          : event.target === this.mathField
+            ? "content-host"
+            : "content",
+    };
   }
 
   syncFromNode(node) {
@@ -252,6 +339,11 @@ class MathNodeView {
   }
 
   handleMouseDown(event) {
+    const currentPos = this.getCurrentPos();
+    const pointer = this.getPointerEntryContext(event);
+    const pointerTarget = currentPos != null
+      ? this.options.resolvePointerEntryTargetAtPos?.(currentPos, pointer) ?? null
+      : null;
     this.options.debug?.("math.mouseDown", {
       instanceId: this.instanceId,
       id: this.node.attrs.id,
@@ -259,12 +351,25 @@ class MathNodeView {
       variant: this.variant,
       target: event.target,
       activeElement: document.activeElement,
+      resolvedPos: currentPos,
+      pointer,
+      pointerTarget,
     });
-    this.options.selectMathNode?.(this.getPos());
 
-    if (event.target === this.dom) {
+    if (currentPos != null) {
+      this.options.selectMathNode?.(currentPos);
+    }
+
+    if (pointerTarget) {
       event.preventDefault();
-      this.focusAtEdge("start");
+      const didApply = this.options.applyWidgetEntryTarget?.(
+        pointerTarget,
+        { entryMode: "pointer" }
+      );
+
+      if (!didApply && Number.isFinite(pointer?.offset)) {
+        this.focusAtOffset(pointer.offset);
+      }
     }
   }
 
@@ -279,11 +384,13 @@ class MathNodeView {
       domConnected: this.dom.isConnected,
       mathFieldConnected: this.mathField.isConnected,
     });
+    this.options.scheduleWidgetFocusSync?.();
     this.schedulePendingFocus();
   }
 
   handleUnmount() {
     this.isMounted = false;
+    this.cancelPendingBlur();
     this.cancelPendingFocus();
     this.options.debug?.("math.unmount", {
       instanceId: this.instanceId,
@@ -294,6 +401,8 @@ class MathNodeView {
   }
 
   handleFocus() {
+    this.cancelPendingBlur();
+
     if (this.isFocused) {
       return;
     }
@@ -301,19 +410,25 @@ class MathNodeView {
     this.isRemoving = false;
     this.isFocused = true;
     this.pendingExitDirection = null;
-    this.pendingBoundaryDirection = null;
     this.dom.classList.add("is-focused");
+    const currentPos = this.getCurrentPos();
     this.options.debug?.("math.focus", {
       instanceId: this.instanceId,
       id: this.node.attrs.id,
       pos: this.safeGetPos(),
+      resolvedPos: currentPos,
       variant: this.variant,
       activeElement: document.activeElement,
       value: this.mathField.getValue(),
       position: this.mathField.position,
       lastOffset: this.mathField.lastOffset,
     });
-    this.options.handleMathFocus(this.node.attrs.id, this.getPos());
+
+    if (currentPos != null) {
+      this.options.handleMathFocus(this.node.attrs.id, currentPos);
+    }
+
+    this.options.scheduleWidgetFocusSync?.();
     this.notifySettingsItemChange(true);
     this.options.handleBackslashMenuChange?.();
   }
@@ -323,18 +438,42 @@ class MathNodeView {
       return;
     }
 
+    if (this.pendingBlurFrame) {
+      return;
+    }
+
+    if (!this.isExiting && !this.isRemoving) {
+      this.pendingBlurFrame = requestAnimationFrame(() => {
+        this.pendingBlurFrame = 0;
+
+        if (this.hasDomFocusWithinMathField()) {
+          return;
+        }
+
+        this.finalizeBlur();
+      });
+      return;
+    }
+
+    this.finalizeBlur();
+  }
+
+  finalizeBlur() {
+    if (!this.isFocused) {
+      return;
+    }
+
     this.isFocused = false;
+    this.pendingExitDirection = null;
+    this.dom.classList.remove("is-focused");
 
     if (this.isExiting) {
       this.isExiting = false;
-      this.pendingExitDirection = null;
-      this.dom.classList.remove("is-focused");
-      this.options.debug?.("math.blur.skipExit", {
+      this.options.debug?.("math.blur.exit", {
         instanceId: this.instanceId,
         id: this.node.attrs.id,
         pos: this.safeGetPos(),
         variant: this.variant,
-        activeElement: document.activeElement,
       });
       return;
     }
@@ -346,11 +485,9 @@ class MathNodeView {
       variant: this.variant,
       activeElement: document.activeElement,
       value: this.mathField.getValue(),
-      pendingExitDirection: this.pendingExitDirection,
     });
 
     if (this.isRemoving) {
-      this.dom.classList.remove("is-focused");
       this.options.debug?.("math.blur.skipRemoving", {
         instanceId: this.instanceId,
         id: this.node.attrs.id,
@@ -360,46 +497,60 @@ class MathNodeView {
       return;
     }
 
-    requestAnimationFrame(() => {
-      this.dom.classList.remove("is-focused");
+    const pendingMathFocusId = this.options.getPendingMathFocusId?.() ?? null;
 
-      if (!this.dom.isConnected) {
-        return;
-      }
-
-      const exitDirection = this.pendingExitDirection;
-      const boundaryDirection = this.pendingBoundaryDirection;
-      this.pendingExitDirection = null;
-      this.pendingBoundaryDirection = null;
-      this.options.debug?.("math.blur", {
+    if (pendingMathFocusId && pendingMathFocusId !== this.node.attrs.id) {
+      this.options.debug?.("math.blur.skipHandoff", {
         instanceId: this.instanceId,
         id: this.node.attrs.id,
         pos: this.safeGetPos(),
         variant: this.variant,
-        exitDirection,
-        boundaryDirection,
-        value: this.mathField.getValue(),
-        activeElement: document.activeElement,
-      });
-
-      if (!isGridMathVariant(this.variant) && this.mathField.getValue().trim() === "") {
-        this.options.removeMathNode(this.getPos(), exitDirection ?? "after");
-        return;
-      }
-
-      this.commitDraft();
-
-      if (exitDirection) {
-        this.options.exitMathNode(this.getPos(), exitDirection);
-        return;
-      }
-
-      this.options.handleMathBlur(this.node.attrs.id, this.getPos(), {
-        boundaryDirection,
+        pendingMathFocusId,
       });
       this.notifySettingsItemChange(true);
       this.options.handleBackslashMenuChange?.();
+      return;
+    }
+
+    if (!this.dom.isConnected) {
+      return;
+    }
+
+    const currentPos = this.getCurrentPos();
+
+    if (!isGridMathVariant(this.variant) && this.mathField.getValue().trim() === "") {
+      if (currentPos != null) {
+        this.options.removeMathNode(currentPos, "after");
+      }
+      return;
+    }
+
+    this.commitDraft();
+
+    this.options.debug?.("math.blur", {
+      instanceId: this.instanceId,
+      id: this.node.attrs.id,
+      pos: this.safeGetPos(),
+      resolvedPos: currentPos,
+      variant: this.variant,
+      value: this.mathField.getValue(),
+      activeElement: document.activeElement,
     });
+
+    if (currentPos != null) {
+      this.options.handleMathBlur(this.node.attrs.id, currentPos);
+    }
+    this.notifySettingsItemChange(true);
+    this.options.handleBackslashMenuChange?.();
+  }
+
+  cancelPendingBlur() {
+    if (!this.pendingBlurFrame) {
+      return;
+    }
+
+    cancelAnimationFrame(this.pendingBlurFrame);
+    this.pendingBlurFrame = 0;
   }
 
   handleSelectionChange() {
@@ -475,10 +626,6 @@ class MathNodeView {
     handleMathKeyDown(this, event);
   }
 
-  handleMoveOut(event) {
-    handleMathMoveOut(this, event);
-  }
-
   getNavigationSnapshot() {
     return JSON.stringify({
       position: this.mathField.position,
@@ -512,11 +659,37 @@ class MathNodeView {
     }
   }
 
+  getCurrentPos() {
+    const directPos = this.safeGetPos();
+
+    if (directPos != null) {
+      return directPos;
+    }
+
+    const fallbackPos = this.options.resolveMathPositionById?.(this.node.attrs.id) ?? null;
+
+    if (fallbackPos != null) {
+      this.options.debug?.("math.resolvePosById", {
+        instanceId: this.instanceId,
+        id: this.node.attrs.id,
+        variant: this.variant,
+        fallbackPos,
+      });
+      return fallbackPos;
+    }
+
+    return null;
+  }
+
   cancelPendingFocus() {
     if (this.pendingFocusFrame) {
       clearTimeout(this.pendingFocusFrame);
       this.pendingFocusFrame = 0;
     }
+
+    this.pendingFocusEdge = null;
+    this.pendingFocusOffset = null;
+    this.pendingFocusSelectionMode = "collapse";
   }
 
   schedulePendingFocus() {
@@ -550,18 +723,26 @@ class MathNodeView {
     }
 
     const edge = this.pendingFocusEdge;
+    const offset = this.pendingFocusOffset;
+    const selectionMode = this.pendingFocusSelectionMode ?? "collapse";
     this.pendingFocusEdge = null;
+    this.pendingFocusOffset = null;
+    this.pendingFocusSelectionMode = "collapse";
 
     try {
       this.mathField.focus({ preventScroll: true });
     } catch (error) {
       this.pendingFocusEdge = edge;
+      this.pendingFocusOffset = offset;
+      this.pendingFocusSelectionMode = selectionMode;
       this.options.debug?.("math.focusAtEdge.error", {
         instanceId: this.instanceId,
         id: this.node.attrs.id,
         pos: this.safeGetPos(),
         variant: this.variant,
         edge,
+        offset,
+        selectionMode,
         message: error instanceof Error ? error.message : String(error),
       });
       this.schedulePendingFocus();
@@ -573,46 +754,80 @@ class MathNodeView {
         '[part="keyboard-sink"]'
       );
 
-      if (keyboardSink instanceof HTMLElement && !this.isFocused) {
+      if (keyboardSink instanceof HTMLElement && !this.hasDomFocusWithinMathField()) {
         keyboardSink.focus({ preventScroll: true });
       }
 
-      this.mathField.position = edge === "start" ? 0 : this.mathField.lastOffset;
+      if (selectionMode === "select-all") {
+        this.mathField.selection = {
+          ranges: [[0, this.mathField.lastOffset]],
+          direction: "forward",
+        };
+      } else {
+        this.mathField.position = Number.isFinite(offset)
+          ? offset
+          : edge === "start"
+            ? 0
+            : this.mathField.lastOffset;
+      }
       this.options.debug?.("math.focusAtEdge.applied", {
         instanceId: this.instanceId,
         id: this.node.attrs.id,
         pos: this.safeGetPos(),
         variant: this.variant,
         edge,
+        offset,
+        selectionMode,
         activeElement: document.activeElement,
         keyboardSinkActive:
           this.mathField.shadowRoot?.activeElement?.getAttribute?.("part") ?? null,
       });
 
       if (!this.isFocused) {
-        if (this.pendingFocusAttempts < 4) {
-          this.pendingFocusAttempts += 1;
-          this.pendingFocusEdge = edge;
-          this.options.debug?.("math.focusAtEdge.retry", {
-            instanceId: this.instanceId,
-            id: this.node.attrs.id,
-            pos: this.safeGetPos(),
-            variant: this.variant,
-            edge,
-            pendingFocusAttempts: this.pendingFocusAttempts,
-          });
-          this.schedulePendingFocus();
-          return;
-        }
-
         this.options.debug?.("math.focusAtEdge.syntheticFocus", {
           instanceId: this.instanceId,
           id: this.node.attrs.id,
           pos: this.safeGetPos(),
           variant: this.variant,
           edge,
+          offset,
+          selectionMode,
         });
         this.handleFocus();
+      }
+
+      if (selectionMode === "select-all") {
+        this.mathField.selection = {
+          ranges: [[0, this.mathField.lastOffset]],
+          direction: "forward",
+        };
+      } else {
+        this.mathField.position = Number.isFinite(offset)
+          ? offset
+          : edge === "start"
+            ? 0
+            : this.mathField.lastOffset;
+      }
+
+      if (!this.hasDomFocusWithinMathField()) {
+        if (this.pendingFocusAttempts < 4) {
+          this.pendingFocusAttempts += 1;
+          this.pendingFocusEdge = edge;
+          this.pendingFocusOffset = offset;
+          this.pendingFocusSelectionMode = selectionMode;
+          this.options.debug?.("math.focusAtEdge.retry", {
+            instanceId: this.instanceId,
+            id: this.node.attrs.id,
+            pos: this.safeGetPos(),
+            variant: this.variant,
+            edge,
+            offset,
+            selectionMode,
+            pendingFocusAttempts: this.pendingFocusAttempts,
+          });
+          this.schedulePendingFocus();
+          return;
+        }
       }
     } catch (error) {
       this.options.debug?.("math.focusAtEdge.positionError", {
@@ -621,6 +836,8 @@ class MathNodeView {
         pos: this.safeGetPos(),
         variant: this.variant,
         edge,
+        offset,
+        selectionMode,
         message: error instanceof Error ? error.message : String(error),
       });
     }
@@ -681,16 +898,18 @@ class MathNodeView {
   commitDraft() {
     this.syncDraftLatexFromField();
     const patch = this.getDraftPatch();
+    const currentPos = this.getCurrentPos();
 
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(patch).length === 0 || currentPos == null) {
       return false;
     }
 
-    const didCommit = this.options.commitMathNode(this.getPos(), patch);
+    const didCommit = this.options.commitMathNode(currentPos, patch);
     this.options.debug?.("math.commitDraft", {
       instanceId: this.instanceId,
       id: this.node.attrs.id,
       pos: this.safeGetPos(),
+      resolvedPos: currentPos,
       variant: this.variant,
       patch,
       didCommit,
@@ -722,8 +941,8 @@ class MathNodeView {
     return fieldValue;
   }
 
-  getActiveSettingsItemState() {
-    if (!this.isFocused) {
+  getActiveSettingsItemState({ requireFocus = true } = {}) {
+    if (requireFocus && !this.hasSettingsInteractionFocus()) {
       return null;
     }
 
@@ -731,6 +950,51 @@ class MathNodeView {
       mathId: this.node.attrs.id,
       pos: this.safeGetPos(),
     });
+  }
+
+  hasDomFocusWithinMathField() {
+    if (this.isDestroyed || !this.dom.isConnected) {
+      return false;
+    }
+
+    const ownerDocument = this.mathField.ownerDocument ?? document;
+    const activeElement = ownerDocument.activeElement;
+    const shadowActiveElement = this.mathField.shadowRoot?.activeElement ?? null;
+
+    if (shadowActiveElement) {
+      return true;
+    }
+
+    if (activeElement === this.mathField) {
+      return true;
+    }
+
+    if (typeof this.mathField.matches === "function" && this.mathField.matches(":focus")) {
+      return true;
+    }
+
+    return false;
+  }
+
+  hasSettingsInteractionFocus() {
+    return this.hasDomFocusWithinMathField()
+      || this.isFocused
+      || this.options.hasActiveMathFocusForId?.(this.node.attrs.id) === true
+      || this.options.hasPendingMathFocusForId?.(this.node.attrs.id) === true;
+  }
+
+  resolveSettingsItemState(item) {
+    if (item?.source !== "math-structure" || item.mathId !== this.node.attrs.id) {
+      return null;
+    }
+
+    const activeItem = this.getActiveSettingsItemState({ requireFocus: false });
+
+    if (!activeItem || activeItem.type !== item.type) {
+      return null;
+    }
+
+    return activeItem;
   }
 
   getActiveBackslashMenuState() {
@@ -759,14 +1023,14 @@ class MathNodeView {
     const bounds = info?.bounds;
 
     if (bounds && bounds.width >= 0 && bounds.height >= 0) {
-      return {
+      return toMathFieldClientRect(this.mathField, {
         top: bounds.bottom,
         right: bounds.right,
         bottom: bounds.bottom,
         left: bounds.left,
         width: Math.max(bounds.width, 1),
         height: Math.max(bounds.height, 1),
-      };
+      });
     }
 
     const rect = this.mathField.getBoundingClientRect();
@@ -834,6 +1098,33 @@ class MathNodeView {
     return true;
   }
 
+  canDeleteMathStructureItem(item) {
+    return this.resolveSettingsItemState(item) != null;
+  }
+
+  deleteMathStructureItem(item) {
+    if (item?.source !== "math-structure" || item.mathId !== this.node.attrs.id) {
+      return false;
+    }
+
+    this.focusMathArraySettingsItem(item);
+
+    const didDelete = deleteActiveMathArrayEnvironment(this.mathField, {
+      expectedType: item.type,
+    });
+
+    if (!didDelete) {
+      return false;
+    }
+
+    this.draftAttrs = {
+      ...this.draftAttrs,
+      latex: getSerializableMathLatex(this.mathField),
+    };
+    this.notifySettingsItemChange(true);
+    return true;
+  }
+
   focusMathArraySettingsItem(item) {
     if (item?.source !== "math-structure" || item.mathId !== this.node.attrs.id) {
       return false;
@@ -884,20 +1175,4 @@ class MathNodeView {
   }
 }
 
-export class InlineMathNodeView extends MathNodeView {
-  constructor(node, view, getPos, options) {
-    super(node, view, getPos, options, "inline");
-  }
-}
-
-export class AlignMathNodeView extends MathNodeView {
-  constructor(node, view, getPos, options) {
-    super(node, view, getPos, options, "align");
-  }
-}
-
-export class GatherMathNodeView extends MathNodeView {
-  constructor(node, view, getPos, options) {
-    super(node, view, getPos, options, "gather");
-  }
-}
+export { MathNodeView };

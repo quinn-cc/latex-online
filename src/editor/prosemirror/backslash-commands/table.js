@@ -128,9 +128,5 @@ export function createTableCommand(schema) {
       const tableNode = createDefaultTableNode(schema, 2, 2, paragraphNode.attrs);
       return tableNode;
     },
-    getSelectionTarget: ({ blockNode, blockPos }) => ({
-      selectionPos: findTableCellTextPos(blockNode, blockPos, 0, 0),
-      selectionBias: 1,
-    }),
   });
 }

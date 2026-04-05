@@ -207,7 +207,29 @@ export function getTableParagraphAttrs(state) {
   });
 }
 
-export function getPageBlockBoundaryContext(state, createBlockPositionList) {
+function isWidgetBlockContainerNode(node) {
+  return (
+    node?.type === editorSchema.nodes.page ||
+    node?.type === editorSchema.nodes.list_item ||
+    node?.type === editorSchema.nodes.table_cell
+  );
+}
+
+function getContainerChildEntries(containerNode, containerPos) {
+  const entries = [];
+
+  containerNode?.forEach((childNode, childOffset, index) => {
+    entries.push({
+      node: childNode,
+      pos: containerPos + 1 + childOffset,
+      index,
+    });
+  });
+
+  return entries;
+}
+
+export function getBlockBoundaryContext(state, direction) {
   const { selection } = state;
 
   if (!(selection instanceof TextSelection) || !selection.empty) {
@@ -215,34 +237,85 @@ export function getPageBlockBoundaryContext(state, createBlockPositionList) {
   }
 
   const { $from } = selection;
+  const requireStart = direction === "backward";
+  const requireEnd = direction === "forward";
 
   if (
     $from.parent.type !== editorSchema.nodes.paragraph ||
-    $from.parentOffset !== 0
+    (requireStart && $from.parentOffset !== 0) ||
+    (requireEnd && $from.parentOffset !== $from.parent.content.size)
   ) {
     return null;
   }
 
-  let blockPos = null;
+  let blockDepth = null;
   let blockNode = null;
+  let blockPos = null;
+  let containerNode = null;
+  let containerPos = null;
 
   for (let depth = $from.depth; depth > 0; depth -= 1) {
     if (
       $from.node(depth).type === editorSchema.nodes.paragraph &&
-      $from.node(depth - 1).type === editorSchema.nodes.page
+      isWidgetBlockContainerNode($from.node(depth - 1))
     ) {
+      blockDepth = depth;
       blockNode = $from.node(depth);
       blockPos = $from.before(depth);
+      containerNode = $from.node(depth - 1);
+      containerPos = depth - 1 > 0 ? $from.before(depth - 1) : 0;
       break;
     }
   }
 
-  if (!blockNode || blockPos == null) {
+  if (
+    blockDepth == null ||
+    !blockNode ||
+    blockPos == null ||
+    !containerNode ||
+    containerPos == null
+  ) {
+    return null;
+  }
+
+  const childEntries = getContainerChildEntries(containerNode, containerPos);
+  const blockIndex = childEntries.findIndex((entry) => entry.pos === blockPos);
+
+  if (blockIndex < 0) {
+    return null;
+  }
+
+  const adjacentBlock = direction === "backward"
+    ? childEntries[blockIndex - 1] ?? null
+    : childEntries[blockIndex + 1] ?? null;
+
+  return {
+    direction,
+    container: {
+      node: containerNode,
+      pos: containerPos,
+    },
+    block: {
+      ...childEntries[blockIndex],
+      node: blockNode,
+      index: blockIndex,
+    },
+    adjacentBlock,
+  };
+}
+
+export function getPageBlockBoundaryContext(state, createBlockPositionList) {
+  const boundaryContext = getBlockBoundaryContext(state, "backward");
+
+  if (
+    !boundaryContext ||
+    boundaryContext.container.node.type !== editorSchema.nodes.page
+  ) {
     return null;
   }
 
   const blocks = createBlockPositionList(state.doc);
-  const blockIndex = blocks.findIndex((entry) => entry.pos === blockPos);
+  const blockIndex = blocks.findIndex((entry) => entry.pos === boundaryContext.block.pos);
 
   if (blockIndex === -1) {
     return null;

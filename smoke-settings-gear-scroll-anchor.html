@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Settings Gear Scroll Anchor Smoke</title>
+  </head>
+  <body data-result="pending">
+    <script type="module">
+      function markStep(step, detail = null) {
+        document.body.dataset.step = step;
+
+        if (detail == null) {
+          delete document.body.dataset.stepDetail;
+          return;
+        }
+
+        document.body.dataset.stepDetail =
+          typeof detail === "string" ? detail : JSON.stringify(detail);
+      }
+
+      function waitFor(condition, timeout = 10000) {
+        const startedAt = Date.now();
+
+        return new Promise((resolve, reject) => {
+          const tick = () => {
+            const value = condition();
+
+            if (value) {
+              resolve(value);
+              return;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+              reject(new Error("Timed out waiting for condition"));
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function assert(condition, message) {
+        if (!condition) {
+          throw new Error(message);
+        }
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function isSettingsVisible(doc) {
+        const overlay = doc.getElementById("slash-item-settings");
+        return Boolean(overlay && !overlay.hidden);
+      }
+
+      function insertCommand(controller, commandName) {
+        controller.view.focus();
+        controller.dispatchTransaction(
+          controller.view.state.tr.insertText(`\\${commandName}`)
+        );
+
+        if (!controller.executeBackslashCommandAtSelection()) {
+          throw new Error(`Expected \\\\${commandName} command to execute`);
+        }
+      }
+
+      async function withController(run) {
+        const iframe = document.createElement("iframe");
+        iframe.src = `./?debug=1&smoke=${Date.now()}-${Math.random()}`;
+        iframe.style.width = "1280px";
+        iframe.style.height = "900px";
+        document.body.append(iframe);
+
+        await waitFor(
+          () => iframe.contentWindow?.__latexOnlineDebug?.controller?.view
+        );
+
+        const controller = iframe.contentWindow.__latexOnlineDebug.controller;
+        controller.clear();
+        await sleep(80);
+        iframe.contentWindow.focus();
+
+        try {
+          return await run(controller, iframe.contentWindow, iframe.contentDocument);
+        } finally {
+          iframe.remove();
+        }
+      }
+
+      function getScrollContainer(contentWindow, contentDocument) {
+        const paperStage = contentDocument.getElementById("paper-stage");
+
+        if (
+          paperStage &&
+          paperStage.scrollHeight > paperStage.clientHeight + 1
+        ) {
+          return paperStage;
+        }
+
+        return contentDocument.scrollingElement ?? contentDocument.documentElement;
+      }
+
+      function getScrollMetrics(container, contentWindow, contentDocument) {
+        const scrollingElement =
+          contentDocument.scrollingElement ?? contentDocument.documentElement;
+        const isDocumentScroller = container === scrollingElement;
+
+        return {
+          top: isDocumentScroller ? contentWindow.scrollY : container.scrollTop,
+          maxTop: Math.max(
+            0,
+            (isDocumentScroller
+              ? scrollingElement.scrollHeight - contentWindow.innerHeight
+              : container.scrollHeight - container.clientHeight)
+          ),
+        };
+      }
+
+      async function scrollWidgetRectToTop(
+        controller,
+        activeItem,
+        contentWindow,
+        contentDocument,
+        targetTop
+      ) {
+        const container = getScrollContainer(contentWindow, contentDocument);
+        const currentRect = controller.getSlashItemClientRect(activeItem);
+
+        assert(currentRect, "Expected widget rect before scroll");
+
+        const metrics = getScrollMetrics(container, contentWindow, contentDocument);
+        const nextTop = clamp(
+          metrics.top + currentRect.top - targetTop,
+          0,
+          metrics.maxTop
+        );
+
+        if (container === (contentDocument.scrollingElement ?? contentDocument.documentElement)) {
+          contentWindow.scrollTo(0, nextTop);
+        } else {
+          container.scrollTop = nextTop;
+        }
+
+        await sleep(120);
+      }
+
+      function appendFillerBlocks(controller, blockCount = 80) {
+        const sentence =
+          "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ";
+
+        controller.view.focus();
+
+        for (let index = 0; index < blockCount; index += 1) {
+          controller.dispatchTransaction(
+            controller.view.state.tr.insertText(sentence)
+          );
+          controller.handleEnter();
+        }
+      }
+
+      async function ensureScrollable(controller, contentWindow, contentDocument) {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const metrics = getScrollMetrics(
+            getScrollContainer(contentWindow, contentDocument),
+            contentWindow,
+            contentDocument
+          );
+
+          if (metrics.maxTop > 400) {
+            return;
+          }
+
+          appendFillerBlocks(controller);
+          await waitFor(() => {
+            const nextMetrics = getScrollMetrics(
+              getScrollContainer(contentWindow, contentDocument),
+              contentWindow,
+              contentDocument
+            );
+
+            return nextMetrics.maxTop > 400;
+          }, 5000).catch(() => null);
+        }
+
+        const metrics = getScrollMetrics(
+          getScrollContainer(contentWindow, contentDocument),
+          contentWindow,
+          contentDocument
+        );
+        assert(metrics.maxTop > 400, "Expected scrollable editor content");
+      }
+
+      function getAnchorSnapshot(controller, contentDocument) {
+        const activeItem = controller.getActiveSlashItemState();
+        const widgetRect = activeItem
+          ? controller.getSlashItemClientRect(activeItem)
+          : null;
+        const toggle = contentDocument.getElementById("slash-item-settings-toggle");
+        const toggleRect = toggle?.getBoundingClientRect?.() ?? null;
+
+        return {
+          activeItem,
+          widgetRect,
+          toggleRect: toggleRect
+            ? {
+                top: toggleRect.top,
+                left: toggleRect.left,
+                right: toggleRect.right,
+                bottom: toggleRect.bottom,
+                width: toggleRect.width,
+                height: toggleRect.height,
+              }
+            : null,
+          topDelta:
+            widgetRect && toggleRect
+              ? toggleRect.top - widgetRect.top
+              : null,
+          leftDelta:
+            widgetRect && toggleRect
+              ? toggleRect.left - (widgetRect.right + 8)
+              : null,
+          overlayHidden:
+            contentDocument.getElementById("slash-item-settings")?.hidden ?? null,
+        };
+      }
+
+      function assertAnchored(snapshot, label) {
+        assert(snapshot.activeItem, `Expected active settings item for ${label}`);
+        assert(snapshot.widgetRect, `Expected widget rect for ${label}`);
+        assert(snapshot.toggleRect, `Expected settings toggle rect for ${label}`);
+        assert(snapshot.overlayHidden === false,
+          `Expected settings overlay to remain mounted for ${label}`);
+        assert(
+          Math.abs(snapshot.topDelta) <= 1.5,
+          `Expected ${label} gear top to stay anchored to widget: ${JSON.stringify(snapshot)}`
+        );
+        assert(
+          Math.abs(snapshot.leftDelta) <= 1.5,
+          `Expected ${label} gear left to stay anchored to widget: ${JSON.stringify(snapshot)}`
+        );
+      }
+
+      async function runTableScenario() {
+        return withController(async (controller, contentWindow, contentDocument) => {
+          markStep("table.fill");
+          await ensureScrollable(controller, contentWindow, contentDocument);
+
+          markStep("table.insert");
+          insertCommand(controller, "table");
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === "table");
+          await waitFor(() => isSettingsVisible(contentDocument));
+
+          const activeItem = controller.getActiveSlashItemState();
+          await scrollWidgetRectToTop(
+            controller,
+            activeItem,
+            contentWindow,
+            contentDocument,
+            -40
+          );
+
+          const snapshot = await waitFor(() => {
+            const nextSnapshot = getAnchorSnapshot(controller, contentDocument);
+            markStep("table.measure", nextSnapshot);
+            return nextSnapshot?.activeItem?.type === "table" ? nextSnapshot : null;
+          });
+
+          assertAnchored(snapshot, "table");
+          return snapshot;
+        });
+      }
+
+      async function runCasesScenario() {
+        return withController(async (controller, contentWindow, contentDocument) => {
+          markStep("cases.fill");
+          await ensureScrollable(controller, contentWindow, contentDocument);
+
+          markStep("cases.insertMath");
+          const insertion = controller.buildInlineMathInsertionTransaction(
+            controller.view.state,
+            controller.view.state.selection.from,
+            controller.view.state.selection.to,
+            ""
+          );
+          controller.dispatchTransaction(insertion);
+
+          const mathTarget = await waitFor(() => controller.getFocusedOrPendingMathTarget());
+          const mathView = await waitFor(() => controller.getMathView(mathTarget.id));
+
+          assert(
+            mathView.mathField.insert(
+              "\\begin{cases}\n\\placeholder{} & \\placeholder{} \\\\\n\\placeholder{} & \\placeholder{}\n\\end{cases}",
+              {
+                format: "latex",
+                mode: "math",
+                selectionMode: "placeholder",
+              }
+            ),
+            "Expected cases insertion"
+          );
+          mathView.notifySettingsItemChange(true);
+          controller.emitSlashItemState();
+
+          await waitFor(() => controller.getActiveSlashItemState()?.type === "cases");
+          await waitFor(() => isSettingsVisible(contentDocument));
+
+          const activeItem = controller.getActiveSlashItemState();
+          await scrollWidgetRectToTop(
+            controller,
+            activeItem,
+            contentWindow,
+            contentDocument,
+            -40
+          );
+
+          const snapshot = await waitFor(() => {
+            const nextSnapshot = getAnchorSnapshot(controller, contentDocument);
+            markStep("cases.measure", nextSnapshot);
+            return nextSnapshot?.activeItem?.type === "cases" ? nextSnapshot : null;
+          });
+
+          assertAnchored(snapshot, "cases");
+          return snapshot;
+        });
+      }
+
+      try {
+        const table = await runTableScenario();
+        const cases = await runCasesScenario();
+
+        document.body.dataset.result = "pass";
+        document.body.dataset.table = JSON.stringify(table);
+        document.body.dataset.cases = JSON.stringify(cases);
+      } catch (error) {
+        document.body.dataset.result = "fail";
+        document.body.dataset.error = error instanceof Error ? error.message : String(error);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

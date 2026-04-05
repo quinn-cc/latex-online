@@ -33,6 +33,12 @@ export function bindSlashItemSettingsUi({ controller }) {
     };
   }
 
+  const overlayHost = document.getElementById("paper-stage") ?? document.body;
+
+  if (slashItemSettings.parentElement !== overlayHost) {
+    overlayHost.append(slashItemSettings);
+  }
+
   let activeItem = null;
   let panelOpen = false;
   let overlayFrame = 0;
@@ -70,6 +76,14 @@ export function bindSlashItemSettingsUi({ controller }) {
     });
   };
 
+  const resolveValidItem = (item) => {
+    if (!item) {
+      return null;
+    }
+
+    return controller.resolveSlashItemState?.(item) ?? null;
+  };
+
   const stopOverlayTracking = () => {
     if (!overlayFrame) {
       return;
@@ -101,6 +115,48 @@ export function bindSlashItemSettingsUi({ controller }) {
   const closePanel = () => {
     panelOpen = false;
     render();
+  };
+
+  const hideSettingsUi = ({ clearItem = false } = {}) => {
+    stopOverlayTracking();
+    panelOpen = false;
+    renderedFieldsSignature = null;
+
+    if (clearItem) {
+      activeItem = null;
+    }
+
+    slashItemSettings.hidden = true;
+    slashItemSettingsPanel.hidden = true;
+  };
+
+  const getOverlayHostMetrics = () => {
+    const hostRect = overlayHost.getBoundingClientRect();
+
+    return {
+      rect: hostRect,
+      scrollTop: overlayHost.scrollTop ?? 0,
+      scrollLeft: overlayHost.scrollLeft ?? 0,
+      clientWidth: overlayHost.clientWidth ?? window.innerWidth,
+      clientHeight: overlayHost.clientHeight ?? window.innerHeight,
+    };
+  };
+
+  const toOverlaySpaceRect = (rect) => {
+    if (!rect) {
+      return null;
+    }
+
+    const metrics = getOverlayHostMetrics();
+
+    return {
+      top: rect.top - metrics.rect.top + metrics.scrollTop,
+      right: rect.right - metrics.rect.left + metrics.scrollLeft,
+      bottom: rect.bottom - metrics.rect.top + metrics.scrollTop,
+      left: rect.left - metrics.rect.left + metrics.scrollLeft,
+      width: rect.width,
+      height: rect.height,
+    };
   };
 
   const renderFields = () => {
@@ -169,24 +225,40 @@ export function bindSlashItemSettingsUi({ controller }) {
       return;
     }
 
+    const resolvedActiveItem = resolveValidItem(activeItem);
+
+    if (!resolvedActiveItem) {
+      hideSettingsUi({ clearItem: true });
+      return;
+    }
+
+    activeItem = resolvedActiveItem;
+
     const rect = controller.getSlashItemClientRect(activeItem);
 
     if (!rect) {
       slashItemSettings.hidden = true;
+      slashItemSettingsPanel.hidden = true;
+      return;
+    }
+
+    const overlayRect = toOverlaySpaceRect(rect);
+
+    if (!overlayRect) {
+      slashItemSettings.hidden = true;
+      slashItemSettingsPanel.hidden = true;
       return;
     }
 
     slashItemSettings.hidden = false;
+    slashItemSettingsPanel.hidden = !panelOpen;
     const toggleSize = 22;
     const gutter = 8;
     const panelWidth = 220;
     const panelHeight = 180;
-    const toggleTop = clamp(rect.top, 6, window.innerHeight - toggleSize - 6);
-    const toggleLeft = clamp(
-      rect.right + gutter,
-      6,
-      window.innerWidth - toggleSize - 6
-    );
+    const metrics = getOverlayHostMetrics();
+    const toggleTop = overlayRect.top;
+    const toggleLeft = overlayRect.right + gutter;
 
     slashItemSettings.style.setProperty("--slash-item-toggle-top", `${toggleTop}px`);
     slashItemSettings.style.setProperty("--slash-item-toggle-left", `${toggleLeft}px`);
@@ -197,13 +269,13 @@ export function bindSlashItemSettingsUi({ controller }) {
 
     const panelTop = clamp(
       toggleTop,
-      6,
-      window.innerHeight - panelHeight - 6
+      metrics.scrollTop + 6,
+      metrics.scrollTop + metrics.clientHeight - panelHeight - 6
     );
     const panelLeft = clamp(
       toggleLeft + toggleSize + gutter,
-      6,
-      window.innerWidth - panelWidth - 6
+      metrics.scrollLeft + 6,
+      metrics.scrollLeft + metrics.clientWidth - panelWidth - 6
     );
 
     slashItemSettings.style.setProperty("--slash-item-panel-top", `${panelTop}px`);
@@ -218,11 +290,7 @@ export function bindSlashItemSettingsUi({ controller }) {
         activeItem,
         panelOpen,
       });
-      stopOverlayTracking();
-      panelOpen = false;
-      renderedFieldsSignature = null;
-      slashItemSettings.hidden = true;
-      slashItemSettingsPanel.hidden = true;
+      hideSettingsUi({ clearItem: true });
       return;
     }
 
@@ -231,9 +299,10 @@ export function bindSlashItemSettingsUi({ controller }) {
       panelOpen,
     });
     slashItemSettingsTitle.textContent = definition.title;
-    slashItemSettingsDeleteButton.hidden = typeof definition.remove !== "function";
-    if (typeof definition.remove === "function") {
-      slashItemSettingsDeleteButton.textContent = definition.deleteLabel;
+    const canDeleteActiveItem = controller.canDeleteSlashItem?.(activeItem) === true;
+    slashItemSettingsDeleteButton.hidden = !canDeleteActiveItem;
+    if (canDeleteActiveItem) {
+      slashItemSettingsDeleteButton.textContent = "Delete widget";
     }
     slashItemSettingsPanel.hidden = !panelOpen;
 
@@ -266,19 +335,27 @@ export function bindSlashItemSettingsUi({ controller }) {
       didUpdate,
       rawValues,
     });
+
+    closePanel();
   };
 
-  slashItemSettingsToggleButton.addEventListener("mousedown", (event) => {
+  const preserveSettingsInteractionContext = (event) => {
     event.preventDefault();
-  });
+  };
+
+  slashItemSettingsToggleButton.addEventListener(
+    "mousedown",
+    preserveSettingsInteractionContext
+  );
   slashItemSettingsToggleButton.addEventListener("click", () => {
     panelOpen = !panelOpen;
     render();
   });
 
-  slashItemSettingsCloseButton?.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-  });
+  slashItemSettingsCloseButton?.addEventListener(
+    "mousedown",
+    preserveSettingsInteractionContext
+  );
   slashItemSettingsCloseButton?.addEventListener("click", closePanel);
 
   slashItemSettingsForm.addEventListener("submit", (event) => {
@@ -287,12 +364,17 @@ export function bindSlashItemSettingsUi({ controller }) {
   });
 
   applyButton?.addEventListener("mousedown", (event) => {
-    event.preventDefault();
+    preserveSettingsInteractionContext(event);
     controller.debugLog?.("slashItemSettings.applyButton.mouseDown", {
       activeItem,
       panelOpen,
     });
   });
+
+  slashItemSettingsDeleteButton.addEventListener(
+    "mousedown",
+    preserveSettingsInteractionContext
+  );
 
   slashItemSettingsDeleteButton.addEventListener("click", () => {
     if (!activeItem) {
@@ -321,29 +403,26 @@ export function bindSlashItemSettingsUi({ controller }) {
 
   return {
     render(nextItem) {
+      const resolvedNextItem = resolveValidItem(nextItem) ?? null;
       const previousIdentity = getItemIdentity(activeItem);
-      const nextIdentity = getItemIdentity(nextItem);
+      const nextIdentity = getItemIdentity(resolvedNextItem);
 
       controller.debugLog?.("slashItemSettings.render.request", {
         previousActiveItem: activeItem,
         nextItem,
+        resolvedNextItem,
         panelOpen,
       });
-
-      if (panelOpen && activeItem && !nextItem) {
-        render();
-        return;
-      }
 
       if (
         previousIdentity &&
         nextIdentity &&
         previousIdentity === nextIdentity
       ) {
-        activeItem = nextItem;
+        activeItem = resolvedNextItem;
       } else {
-        activeItem = nextItem;
-        panelOpen = panelOpen && Boolean(nextItem);
+        activeItem = resolvedNextItem;
+        panelOpen = false;
         renderedFieldsSignature = null;
       }
 
